@@ -3,10 +3,10 @@
 Voice Input Bridge for Linux (Wayland / Hyprland)
 手机语音输入直达 Linux 电脑：双端互联，利用手机成熟语音输入法，同步至 Linux 焦点输入框与系统剪贴板。
 """
-
 import os
 import sys
 import json
+import signal
 import socket
 import argparse
 import subprocess
@@ -1004,9 +1004,16 @@ MOBILE_HTML = """<!DOCTYPE html>
 
 class VoiceRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        # 简化日志输出
         sys.stdout.write(f"[{self.log_date_time_string()}] {self.address_string()} - {format % args}\n")
         sys.stdout.flush()
+
+    def handle_one_request(self):
+        try:
+            super().handle_one_request()
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            pass
+        except Exception as e:
+            sys.stderr.write(f"[HTTP Error] {e}\n")
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -1137,11 +1144,19 @@ def main():
     print(" 服务运行中 (按 Ctrl+C 停止)...")
     sys.stdout.flush()
 
+    def handle_sigterm(signum, frame):
+        print("\n[👋 收到终止信号，安全退出...]")
+        server.server_close()
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, handle_sigterm)
+    signal.signal(signal.SIGINT, handle_sigterm)
+
     try:
         server.serve_forever()
-    except KeyboardInterrupt:
-        print("\n[👋 服务已停止]")
+    except (KeyboardInterrupt, SystemExit):
+        pass
+    finally:
         server.server_close()
-
 if __name__ == "__main__":
     main()
