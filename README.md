@@ -33,7 +33,7 @@
 通过终端克隆并运行交互式控制中心：
 
 ```bash
-git clone https://github.com/2740653660/voice-input.git
+git clone https://github.com/yyxxd/voice-input.git
 cd voice-input
 ./menu.sh
 ```
