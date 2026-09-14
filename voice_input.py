@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Voice Input Bridge for Linux (Wayland / Hyprland)
-手机语音输入直达 Linux 电脑：双端互联，利用手机成熟语音输入法，同步至 Linux 焦点输入框与系统剪贴板。
+Voice Input Bridge (Linux / Windows 双平台通用)
+手机语音输入直达电脑：双端互联，利用手机成熟语音输入法，同步至当前焦点输入框与系统剪贴板。
 """
 import os
 import time
@@ -10,19 +10,187 @@ import json
 import signal
 import socket
 import argparse
+import platform
 import subprocess
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
+# 在无控制台的后台模式 (如 Windows pythonw.exe) 下，将 None 重定向至 devnull 防止写入崩溃
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")
+IS_WINDOWS = platform.system() == "Windows"
+IS_LINUX = platform.system() == "Linux"
+
 # ---------------------------------------------------------
-# 1. Wayland 与系统环境智能探测
+# Windows Win32 API 辅助定义 (纯 Python 标准库 ctypes)
+# ---------------------------------------------------------
+if IS_WINDOWS:
+    import ctypes
+    from ctypes import wintypes
+    import winsound
+
+    _user32 = ctypes.windll.user32
+    _kernel32 = ctypes.windll.kernel32
+
+    # 函数签名精确定义（保证 64 位系统指针安全，杜绝截断崩溃）
+    _user32.OpenClipboard.argtypes = [wintypes.HWND]
+    _user32.OpenClipboard.restype = wintypes.BOOL
+    _user32.CloseClipboard.argtypes = []
+    _user32.CloseClipboard.restype = wintypes.BOOL
+    _user32.EmptyClipboard.argtypes = []
+    _user32.EmptyClipboard.restype = wintypes.BOOL
+    _user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+    _user32.SetClipboardData.restype = wintypes.HANDLE
+    _user32.GetForegroundWindow.restype = wintypes.HWND
+    _user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    _user32.GetClassNameW.restype = ctypes.c_int
+    _user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    _user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    _user32.keybd_event.argtypes = [wintypes.BYTE, wintypes.BYTE, wintypes.DWORD, ctypes.c_size_t]
+    _user32.keybd_event.restype = None
+
+    _kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+    _kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+    _kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    _kernel32.GlobalLock.restype = ctypes.c_void_p
+    _kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    _kernel32.GlobalUnlock.restype = wintypes.BOOL
+    _kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+    _kernel32.GlobalFree.restype = wintypes.HGLOBAL
+    _kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    _kernel32.OpenProcess.restype = wintypes.HANDLE
+    _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    _kernel32.CloseHandle.restype = wintypes.BOOL
+    _kernel32.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+    _kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+
+    # 尝试开启 Windows 控制台虚拟终端支持（VT100 ANSI 颜色高亮）
+    try:
+        h_stdout = _kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+        mode = wintypes.DWORD()
+        if _kernel32.GetConsoleMode(h_stdout, ctypes.byref(mode)):
+            _kernel32.SetConsoleMode(h_stdout, mode.value | 0x0004)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    except Exception:
+        pass
+
+def win32_set_clipboard(text: str) -> bool:
+    """Windows 原生 Unicode (UTF-16LE) 剪贴板写入，杜绝中文乱码与字符截断"""
+    CF_UNICODETEXT = 13
+    GMEM_MOVEABLE = 0x0002
+
+    # 短暂重试，避免其他应用短暂独占剪贴板导致写入失败
+    opened = False
+    for _ in range(5):
+        if _user32.OpenClipboard(None):
+            opened = True
+            break
+        time.sleep(0.02)
+    if not opened:
+        return False
+
+    try:
+        _user32.EmptyClipboard()
+        data = text.encode("utf-16le") + b"\x00\x00"
+        h_mem = _kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+        if not h_mem:
+            return False
+        p_mem = _kernel32.GlobalLock(h_mem)
+        if not p_mem:
+            _kernel32.GlobalFree(h_mem)
+            return False
+        ctypes.memmove(p_mem, data, len(data))
+        _kernel32.GlobalUnlock(h_mem)
+        if not _user32.SetClipboardData(CF_UNICODETEXT, h_mem):
+            _kernel32.GlobalFree(h_mem)
+            return False
+        return True
+    finally:
+        _user32.CloseClipboard()
+
+def win32_get_active_window_info():
+    """获取 Windows 当前激活焦点窗口的 (类名, 进程名)"""
+    hwnd = _user32.GetForegroundWindow()
+    if not hwnd:
+        return "", ""
+
+    cls_buf = ctypes.create_unicode_buffer(256)
+    _user32.GetClassNameW(hwnd, cls_buf, 256)
+    cls_name = cls_buf.value
+
+    pid = wintypes.DWORD()
+    _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    proc_name = ""
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    h_proc = _kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
+    if h_proc:
+        try:
+            path_buf = ctypes.create_unicode_buffer(1024)
+            path_len = wintypes.DWORD(1024)
+            if _kernel32.QueryFullProcessImageNameW(h_proc, 0, path_buf, ctypes.byref(path_len)):
+                proc_name = os.path.basename(path_buf.value).lower()
+        finally:
+            _kernel32.CloseHandle(h_proc)
+
+    return cls_name, proc_name
+
+def win32_paste(is_terminal: bool):
+    """自适应模拟粘贴：终端模拟 Ctrl+Shift+V，普通窗口模拟 Ctrl+V"""
+    VK_CONTROL = 0x11
+    VK_SHIFT = 0x10
+    VK_V = 0x56
+    KEYEVENTF_KEYUP = 0x0002
+
+    if is_terminal:
+        # 终端 / SSH 环境：模拟 Ctrl + Shift + V
+        _user32.keybd_event(VK_CONTROL, 0, 0, 0)
+        _user32.keybd_event(VK_SHIFT, 0, 0, 0)
+        _user32.keybd_event(VK_V, 0, 0, 0)
+        time.sleep(0.01)
+        _user32.keybd_event(VK_V, 0, KEYEVENTF_KEYUP, 0)
+        _user32.keybd_event(VK_SHIFT, 0, KEYEVENTF_KEYUP, 0)
+        _user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+    else:
+        # 普通日常软件：模拟 Ctrl + V
+        _user32.keybd_event(VK_CONTROL, 0, 0, 0)
+        _user32.keybd_event(VK_V, 0, 0, 0)
+        time.sleep(0.01)
+        _user32.keybd_event(VK_V, 0, KEYEVENTF_KEYUP, 0)
+        _user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+
+def win32_press_key(key: str = "Return"):
+    """模拟单次键盘敲击 (Return / Enter 等)"""
+    KEYEVENTF_KEYUP = 0x0002
+    vk_map = {
+        "return": 0x0D,
+        "enter": 0x0D,
+        "backspace": 0x08,
+        "space": 0x20,
+        "tab": 0x09,
+        "escape": 0x1B
+    }
+    vk = vk_map.get(key.lower(), 0x0D)
+    _user32.keybd_event(vk, 0, 0, 0)
+    time.sleep(0.01)
+    _user32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
+    return {"ok": True}
+
+# ---------------------------------------------------------
+# 1. 系统环境与局域网 IP 探测
 # ---------------------------------------------------------
 
 def setup_wayland_env():
-    """确保在 SSH、systemd 用户服务或无图形子 shell 下也能正确定位 Wayland 与 D-Bus 会话"""
+    """确保在 SSH、systemd 用户服务或无图形子 shell 下也能正确定位 Wayland 与 D-Bus 会话 (仅 Linux)"""
+    if not IS_LINUX:
+        return os.environ.copy()
     env = os.environ.copy()
-    uid = os.getuid()
+    try:
+        uid = os.getuid()
+    except AttributeError:
+        return env
 
     if "XDG_RUNTIME_DIR" not in env:
         env["XDG_RUNTIME_DIR"] = f"/run/user/{uid}"
@@ -35,11 +203,9 @@ def setup_wayland_env():
                 if not s.name.endswith(".lock")
             ]
             if sockets:
-                # 优先选择数字最小的可用 socket
                 sockets.sort()
                 env["WAYLAND_DISPLAY"] = sockets[0]
 
-        # 补充 Hyprland 实例环境变量，以便 hyprctl 在后台服务中正常调用
         if "HYPRLAND_INSTANCE_SIGNATURE" not in env:
             hypr_dir = runtime_path / "hypr"
             if hypr_dir.exists():
@@ -48,7 +214,6 @@ def setup_wayland_env():
                     hypr_instances.sort(key=lambda p: p.stat().st_mtime, reverse=True)
                     env["HYPRLAND_INSTANCE_SIGNATURE"] = hypr_instances[0].name
 
-        # 补充 D-Bus 会话总线地址，以便 notify-send 正常投递桌面通知
         if "DBUS_SESSION_BUS_ADDRESS" not in env:
             bus_sock = runtime_path / "bus"
             if bus_sock.exists():
@@ -59,48 +224,65 @@ def setup_wayland_env():
 APP_ENV = setup_wayland_env()
 
 def get_lan_ips():
-    """获取本机有效局域网 IP（优先排除 docker/tun 等虚拟网卡）"""
+    """获取本机有效局域网 IP（跨平台通用，优先排除虚拟网卡并优先选取常用物理内网段）"""
     ips = []
+
+    # 1. 通用 UDP socket 出口探测（双平台秒级生效，优先获取默认网卡 IP）
     try:
-        output = subprocess.check_output(
-            ["ip", "-4", "-o", "addr", "show"], text=True
-        )
-        for line in output.strip().splitlines():
-            parts = line.split()
-            if len(parts) >= 4:
-                dev = parts[1]
-                ip_cidr = parts[3]
-                ip = ip_cidr.split("/")[0]
-                if ip.startswith("127."):
-                    continue
-                # 记录网卡和 IP
-                ips.append((dev, ip))
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("223.5.5.5", 80))
+        primary_ip = s.getsockname()[0]
+        s.close()
+        if primary_ip and not primary_ip.startswith("127."):
+            ips.append(primary_ip)
     except Exception:
-        # 回退通用探测方式
+        pass
+
+    # 2. 主机名接口枚举（双平台通用）
+    try:
+        hostname = socket.gethostname()
+        for ip in socket.gethostbyname_ex(hostname)[2]:
+            if not ip.startswith("127.") and ip not in ips:
+                ips.append(ip)
+    except Exception:
+        pass
+
+    # 3. Linux 专属补充探测
+    if IS_LINUX:
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("223.5.5.5", 80))
-            fallback_ip = s.getsockname()[0]
-            s.close()
-            return [fallback_ip]
+            output = subprocess.check_output(
+                ["ip", "-4", "-o", "addr", "show"], text=True
+            )
+            for line in output.strip().splitlines():
+                parts = line.split()
+                if len(parts) >= 4:
+                    dev = parts[1]
+                    if any(dev.startswith(prefix) for prefix in ["docker", "veth", "br-", "virbr", "tun", "tap", "meta"]):
+                        continue
+                    ip = parts[3].split("/")[0]
+                    if not ip.startswith("127.") and ip not in ips:
+                        ips.append(ip)
         except Exception:
-            return ["127.0.0.1"]
+            pass
 
-    # 排序：优先选择常见的物理内网段 (192.168.x, 10.x, 172.16-31.x)
-    sorted_ips = []
-    for dev, ip in ips:
-        if any(dev.startswith(prefix) for prefix in ["docker", "veth", "br-", "virbr", "tun", "tap", "meta"]):
-            continue
+    # 过滤 APIPA (169.254.x.x) 和回环
+    filtered = [ip for ip in ips if not ip.startswith("169.254.") and not ip.startswith("127.")]
+    if not filtered:
+        filtered = ["127.0.0.1"]
+
+    # 优先级排序：192.168.x 优先 > 10.x 局域网 > 172.16-31.x > 其它
+    def ip_sort_key(ip: str):
         if ip.startswith("192.168."):
-            sorted_ips.insert(0, ip)
-        elif ip.startswith("10.") and not dev.startswith("tun"):
-            sorted_ips.append(ip)
-        else:
-            sorted_ips.append(ip)
-    if not sorted_ips:
-        sorted_ips = [ip for _, ip in ips] or ["127.0.0.1"]
+            return (0, ip)
+        if ip.startswith("10.") and not ip.startswith("10.222."):
+            return (1, ip)
+        if ip.startswith("172."):
+            return (2, ip)
+        return (3, ip)
 
-    # 去重
+    sorted_ips = sorted(filtered, key=ip_sort_key)
+
+    # 去重保留顺序
     seen = set()
     result = []
     for ip in sorted_ips:
@@ -113,7 +295,7 @@ def get_lan_ips():
 # 2. 文本注入与剪贴板控制
 # ---------------------------------------------------------
 
-# 常见主流 Linux 终端模拟器的 class / app_id
+# Linux 常见主流终端模拟器的 class / app_id
 KNOWN_TERMINAL_CLASSES = {
     "alacritty", "kitty", "foot", "footclient", "ghostty", "wezterm", "wezterm-gui",
     "gnome-terminal", "gnome-terminal-server", "org.gnome.terminal", "konsole",
@@ -122,9 +304,24 @@ KNOWN_TERMINAL_CLASSES = {
     "hyper", "tabby", "warp", "blackbox", "ptyxis", "deepin-terminal"
 }
 
+# Windows 常见终端进程与窗口类名
+KNOWN_WINDOWS_TERMINALS = {
+    "windowsterminal.exe", "cmd.exe", "powershell.exe", "pwsh.exe", "conhost.exe",
+    "alacritty.exe", "kitty.exe", "wezterm-gui.exe", "ghostty.exe", "putty.exe",
+    "xshell.exe", "mobaxterm.exe", "mintty.exe", "hyper.exe", "tabby.exe", "warp.exe",
+    "git-bash.exe", "bash.exe", "wsl.exe"
+}
+KNOWN_WINDOWS_TERMINAL_CLASSES = {
+    "ConsoleWindowClass", "CASCADIA_HOSTING_WINDOW_CLASS", "PuTTY", "VirtualConsoleClass"
+}
+
 def get_active_window_class() -> str:
-    """探测当前处于焦点的活动窗口 class / app_id"""
-    # 1. 优先尝试 Hyprland (hyprctl)
+    """探测当前处于焦点的活动窗口 class / app_id (Linux)"""
+    if IS_WINDOWS:
+        cls_name, _ = win32_get_active_window_info()
+        return cls_name
+
+    # Linux 优先尝试 Hyprland (hyprctl)
     try:
         proc = subprocess.run(
             ["hyprctl", "activewindow", "-j"],
@@ -141,7 +338,7 @@ def get_active_window_class() -> str:
     except Exception:
         pass
 
-    # 2. 尝试 Sway (swaymsg)
+    # Linux 尝试 Sway (swaymsg)
     try:
         proc = subprocess.run(
             ["swaymsg", "-t", "get_tree"],
@@ -168,29 +365,38 @@ def get_active_window_class() -> str:
 
     return ""
 
-def is_terminal_window(window_class: str) -> bool:
+def is_terminal_window(window_class: str = "", proc_name: str = "") -> bool:
     """判定指定窗口是否为终端模拟器"""
-    if not window_class:
+    if IS_WINDOWS:
+        if proc_name and proc_name.lower() in KNOWN_WINDOWS_TERMINALS:
+            return True
+        if window_class and window_class in KNOWN_WINDOWS_TERMINAL_CLASSES:
+            return True
+        if "terminal" in proc_name.lower() or "term" in proc_name.lower():
+            return True
         return False
-    cls_lower = window_class.lower()
-    if cls_lower in KNOWN_TERMINAL_CLASSES:
-        return True
-    if "terminal" in cls_lower:
-        return True
-    if any(cls_lower.startswith(p) for p in ["alacritty", "kitty", "foot", "ghostty", "wezterm", "term-"]):
-        return True
-    if any(cls_lower.endswith(s) for s in ["-terminal", "-term", ".terminal"]):
-        return True
-    return False
+    else:
+        if not window_class:
+            return False
+        cls_lower = window_class.lower()
+        if cls_lower in KNOWN_TERMINAL_CLASSES:
+            return True
+        if "terminal" in cls_lower:
+            return True
+        if any(cls_lower.startswith(p) for p in ["alacritty", "kitty", "foot", "ghostty", "wezterm", "term-"]):
+            return True
+        if any(cls_lower.endswith(s) for s in ["-terminal", "-term", ".terminal"]):
+            return True
+        return False
 
 def inject_text(text: str, mode: str = "auto"):
     """
     双通道无损注入逻辑：
-    1. 无条件写入 Wayland 剪贴板 (wl-copy) 确保内容不丢失
+    1. 无条件写入系统剪贴板确保内容物理不丢失
     2. 如果 mode == 'auto'：
        - 智能检测活动窗口是否为终端
-       - 终端触发 Ctrl+Shift+V
-       - 普通应用触发 Ctrl+V
+       - 终端触发 Ctrl+Shift+V (完美兼容 Linux 终端与 Windows SSH/CMD)
+       - 普通应用触发 Ctrl+V (兼容微信、记事本、浏览器等)
     """
     result = {
         "ok": False,
@@ -200,7 +406,27 @@ def inject_text(text: str, mode: str = "auto"):
         "error": None
     }
 
-    # 检查 wl-copy
+    if IS_WINDOWS:
+        # Windows 分支
+        if not win32_set_clipboard(text):
+            result["error"] = "写入 Windows 剪贴板失败"
+            return result
+        result["copied"] = True
+
+        if mode == "auto":
+            cls_name, proc_name = win32_get_active_window_info()
+            is_term = is_terminal_window(cls_name, proc_name)
+            result["target_is_terminal"] = is_term
+            try:
+                win32_paste(is_terminal=is_term)
+                result["typed"] = True
+            except Exception as e:
+                result["error"] = f"Windows 模拟按键失败: {e}"
+                return result
+        result["ok"] = True
+        return result
+
+    # Linux 分支 (Wayland wl-copy & wtype)
     try:
         proc_copy = subprocess.run(
             ["wl-copy"],
@@ -213,7 +439,6 @@ def inject_text(text: str, mode: str = "auto"):
         )
         result["copied"] = True
     except subprocess.TimeoutExpired:
-        # wl-copy 正常 fork 至后台提供剪贴板服务
         result["copied"] = True
     except subprocess.CalledProcessError:
         result["error"] = "wl-copy 写入剪贴板失败"
@@ -222,13 +447,15 @@ def inject_text(text: str, mode: str = "auto"):
         result["error"] = "系统中未安装 wl-copy，请确认已安装 wl-clipboard"
         return result
 
-    # 模拟按键上屏
     if mode == "auto":
         active_cls = get_active_window_class()
+        if not active_cls:
+            result["typed"] = False
+            result["ok"] = True
+            return result
         is_term = is_terminal_window(active_cls)
         result["target_is_terminal"] = is_term
 
-        # 快捷键自适应：终端默认使用 Ctrl+Shift+V，普通软件使用 Ctrl+V
         if is_term:
             key_cmd = ["wtype", "-M", "ctrl", "-M", "shift", "-k", "v", "-m", "shift", "-m", "ctrl"]
         else:
@@ -255,7 +482,10 @@ def inject_text(text: str, mode: str = "auto"):
     return result
 
 def press_key(key: str = "Return"):
-    """模拟单次物理按键敲击 (如 Return / BackSpace 等)"""
+    """模拟单次物理按键敲击 (如 Return / Enter / BackSpace 等)"""
+    if IS_WINDOWS:
+        return win32_press_key(key)
+
     try:
         subprocess.run(
             ["wtype", "-k", key],
@@ -272,20 +502,56 @@ def press_key(key: str = "Return"):
         return {"ok": False, "error": "系统中未安装 wtype"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
 # ---------------------------------------------------------
-# 2.1 电脑端即时音频反馈
+# 2.1 电脑端即时音频反馈 (统一专属轻微机械轴微敲击音)
 # ---------------------------------------------------------
 
 ENABLE_SOUND = True
-SOUND_FILE = "/usr/share/sounds/freedesktop/stereo/audio-volume-change.oga"
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+SOUND_FILE = os.path.join(PROJECT_DIR, "pop.wav")
+
+def ensure_sound_file():
+    """若声音文件缺失，使用标准库 wave 自动合成 45ms 轻微柔和的按键音"""
+    if not os.path.exists(SOUND_FILE):
+        try:
+            import wave, struct, math
+            sample_rate = 44100
+            duration = 0.045
+            num_samples = int(sample_rate * duration)
+            samples = []
+            for i in range(num_samples):
+                t = i / sample_rate
+                freq = 350 + 650 * math.exp(-t * 90)
+                env = min(1.0, t / 0.003) * math.exp(-t * 65)
+                val = (math.sin(2 * math.pi * freq * t) + 0.3 * math.sin(4 * math.pi * freq * t)) * env * 0.25
+                sample_val = int(max(-32767, min(32767, val * 32767)))
+                samples.append(struct.pack('<h', sample_val))
+            with wave.open(SOUND_FILE, 'wb') as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(sample_rate)
+                wav.writeframes(b''.join(samples))
+        except Exception:
+            pass
+
+ensure_sound_file()
 
 def play_feedback_sound():
-    """异步非阻塞播放轻微清脆的键盘上屏音效"""
+    """跨平台统一播放轻柔的按键上屏音效 (杜绝 Windows 系统刺耳的叮咚通知声)"""
     global ENABLE_SOUND
     if not ENABLE_SOUND or not os.path.exists(SOUND_FILE):
         return
-    # 优先使用 pw-play (PipeWire)，回退使用 paplay
-    player = "pw-play" if os.path.exists("/usr/bin/pw-play") else ("paplay" if os.path.exists("/usr/bin/paplay") else None)
+
+    if IS_WINDOWS:
+        try:
+            winsound.PlaySound(SOUND_FILE, winsound.SND_FILENAME | winsound.SND_ASYNC)
+        except Exception:
+            pass
+        return
+
+    # Linux 分支: 优先使用 pw-play (PipeWire)，回退 paplay 或 aplay
+    player = "pw-play" if os.path.exists("/usr/bin/pw-play") else ("paplay" if os.path.exists("/usr/bin/paplay") else ("aplay" if os.path.exists("/usr/bin/aplay") else None))
     if not player:
         return
     try:
@@ -303,9 +569,32 @@ def play_feedback_sound():
 # ---------------------------------------------------------
 
 def send_desktop_notification(title: str, body: str):
-    """异步非阻塞发送系统桌面通知 (notify-send)"""
-    # 截断过长内容，保持通知卡片紧凑优雅
+    """异步非阻塞发送系统桌面通知"""
     display_body = body if len(body) <= 120 else f"{body[:117]}..."
+
+    if IS_WINDOWS:
+        # Windows 10/11 原生 Toast 弹窗通知 (PowerShell 后台异步调用)
+        safe_title = title.replace('"', '`"').replace("'", "''")
+        safe_body = display_body.replace('"', '`"').replace("'", "''")
+        ps_cmd = (
+            f"[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; "
+            f"$t = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); "
+            f"$nodes = $t.GetElementsByTagName('text'); "
+            f"$nodes.Item(0).AppendChild($t.CreateTextNode('{safe_title}')) > $null; "
+            f"$nodes.Item(1).AppendChild($t.CreateTextNode('{safe_body}')) > $null; "
+            f"$toast = [Windows.UI.Notifications.ToastNotification]::new($t); "
+            f"[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Voice Input Bridge').Show($toast);"
+        )
+        try:
+            subprocess.Popen(
+                ["powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", ps_cmd],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+        except Exception:
+            pass
+        return
+
     try:
         subprocess.Popen(
             [
@@ -322,7 +611,6 @@ def send_desktop_notification(title: str, body: str):
         )
     except Exception:
         pass
-# ---------------------------------------------------------
 # 3. 手机端 Web 界面 HTML (纯单文件嵌入)
 # ---------------------------------------------------------
 
@@ -1034,19 +1322,17 @@ MOBILE_HTML = """<!DOCTYPE html>
             charCount.textContent = '0 字符';
           }
 
-          // 按钮原地轻量反馈 (不弹视线遮挡的 Toast)
+          // 按钮原地轻量反馈：统一显示“已发送”
           sendBtn.classList.add('success');
-          const successLabel = currentMode === 'auto' ? '已上屏' : '已存剪贴板';
           sendBtn.innerHTML = `
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
               <polyline points="20 6 9 17 4 12"/>
             </svg>
-            <span>${successLabel}</span>
+            <span>已发送</span>
           `;
-
           setTimeout(() => {
             resetSendBtn();
-          }, 650);
+          }, 750);
         } else {
           resetSendBtn();
           showToast('错误: ' + (data.error || '发送失败'));
@@ -1177,9 +1463,17 @@ MOBILE_HTML = """<!DOCTYPE html>
 # ---------------------------------------------------------
 
 class VoiceRequestHandler(BaseHTTPRequestHandler):
+    def address_string(self):
+        # 禁用反向 DNS 解析，直接返回 IP，避免 Windows 局域网下耗时阻塞
+        return self.client_address[0]
+
     def log_message(self, format, *args):
-        sys.stdout.write(f"[{self.log_date_time_string()}] {self.address_string()} - {format % args}\n")
-        sys.stdout.flush()
+        if sys.stdout is not None:
+            try:
+                sys.stdout.write(f"[{self.log_date_time_string()}] {self.address_string()} - {format % args}\n")
+                sys.stdout.flush()
+            except Exception:
+                pass
 
     def handle_one_request(self):
         try:
@@ -1187,8 +1481,11 @@ class VoiceRequestHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             pass
         except Exception as e:
-            sys.stderr.write(f"[HTTP Error] {e}\n")
-
+            if sys.stderr is not None:
+                try:
+                    sys.stderr.write(f"[HTTP Error] {e}\n")
+                except Exception:
+                    pass
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == "/" or parsed.path == "/index.html":
@@ -1204,6 +1501,7 @@ class VoiceRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json; charset=utf-8")
             payload = {
                 "status": "ok",
+                "platform": platform.system(),
                 "wayland_display": APP_ENV.get("WAYLAND_DISPLAY"),
                 "xdg_runtime_dir": APP_ENV.get("XDG_RUNTIME_DIR")
             }
@@ -1237,11 +1535,9 @@ class VoiceRequestHandler(BaseHTTPRequestHandler):
                 inject_res = inject_text(text, mode)
                 if inject_res["ok"]:
                     play_feedback_sound()
-                    # 模式为仅剪贴板时，电脑屏幕弹出通知提醒
-                    if mode == "clipboard_only":
-                        send_desktop_notification("已复制到剪贴板", text)
-                    elif mode == "auto" and auto_enter:
-                        time.sleep(0.06)  # 间隔 60ms 确保模拟粘贴按键完全释放与文本完成上屏
+                    # 如果勾选了自动回车，间隔 60ms 敲下回车键
+                    if auto_enter:
+                        time.sleep(0.06)
                         press_key("Return")
                 self.send_response(200 if inject_res["ok"] else 500)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -1262,6 +1558,48 @@ class VoiceRequestHandler(BaseHTTPRequestHandler):
 # 5. 启动入口与二维码展示
 # ---------------------------------------------------------
 
+def get_qr_ansi(text: str) -> str:
+    """尝试获取终端字符二维码：优先 qrencode 命令，次选 python-qrcode 库"""
+    try:
+        proc = subprocess.run(
+            ["qrencode", "-t", "ANSIUTF8", text],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=1
+        )
+        if proc.returncode == 0 and proc.stdout:
+            return proc.stdout.strip("\n")
+    except Exception:
+        pass
+
+    try:
+        import qrcode
+        qr = qrcode.QRCode(border=1)
+        qr.add_data(text)
+        qr.make(fit=True)
+        matrix = qr.get_matrix()
+        lines = []
+        for r in range(0, len(matrix), 2):
+            line = []
+            for c in range(len(matrix[0])):
+                top = matrix[r][c]
+                bot = matrix[r+1][c] if r + 1 < len(matrix) else False
+                if top and bot:
+                    line.append(" ")
+                elif top and not bot:
+                    line.append("▄")
+                elif not top and bot:
+                    line.append("▀")
+                else:
+                    line.append("█")
+            lines.append("".join(line))
+        return "\n".join(lines)
+    except Exception:
+        pass
+
+    return ""
+
 def main():
     parser = argparse.ArgumentParser(description="Voice Input Bridge Server")
     parser.add_argument("--port", type=int, default=58002, help="监听端口 (默认 58002)")
@@ -1276,11 +1614,11 @@ def main():
     global ENABLE_SOUND
     ENABLE_SOUND = args.sound
 
-    # 尝试绑定端口
+    # 尝试绑定端口 (兼容 Linux errno 98 与 Windows WSAEADDRINUSE 10048)
     try:
         server = HTTPServer((args.host, port), VoiceRequestHandler)
     except OSError as e:
-        if e.errno == 98: # Address already in use
+        if e.errno in (98, 10048):
             print(f"\n[⚠️ 端口提示] 端口 {port} 当前已被其他进程占用！")
             print(f"[🔄 自动回退] 尝试使用防火墙已放行的备用端口: {args.fallback_port} ...")
             try:
@@ -1300,26 +1638,33 @@ def main():
         primary_ip = lan_ips[0] if lan_ips else "127.0.0.1"
     access_url = f"http://{primary_ip}:{port}"
 
+    sys_name = "Windows" if IS_WINDOWS else "Linux / Wayland"
     print("=" * 60)
-    print(" 🎙️  Voice Input Bridge (Linux / Wayland 已就绪)")
+    print(f" 🎙️  Voice Input Bridge ({sys_name} 已就绪)")
     print("=" * 60)
     print(f" • 监听地址: {args.host}:{port}")
-    print(f" • 桌面会话: WAYLAND_DISPLAY={APP_ENV.get('WAYLAND_DISPLAY')}")
+    if IS_WINDOWS:
+        print(f" • 操作系统: Windows ({platform.release()})")
+    else:
+        print(f" • 桌面会话: WAYLAND_DISPLAY={APP_ENV.get('WAYLAND_DISPLAY')}")
     print(f" • 手机直连: \033[1;36m{access_url}\033[0m")
     if len(lan_ips) > 1:
         print(f" • 备用地址: {', '.join([f'http://{ip}:{port}' for ip in lan_ips[1:]])}")
 
-    # 打印二维码
-    try:
-        qr_output = subprocess.check_output(
-            ["qrencode", "-t", "ANSIUTF8", access_url],
-            stderr=subprocess.DEVNULL,
-            text=True
-        )
+    # 打印二维码或直连说明
+    qr_output = get_qr_ansi(access_url)
+    if qr_output:
         print("\n 📱 手机扫码直达输入界面:")
         print(qr_output)
-    except Exception:
-        pass
+    else:
+        print("\n" + "-" * 60)
+        print(" 📱 手机扫码直达输入界面:")
+        print(f"    👉 请在手机浏览器地址栏输入: \033[1;36m{access_url}\033[0m")
+        if IS_WINDOWS:
+            print("    💡 提示: 电脑终端运行 pip install qrcode 即可开启字符二维码扫码")
+        else:
+            print("    💡 提示: 安装 qrencode 即可开启字符二维码扫码")
+        print("-" * 60)
 
     print("=" * 60)
     print(" 服务运行中 (按 Ctrl+C 停止)...")
@@ -1339,5 +1684,6 @@ def main():
         pass
     finally:
         server.server_close()
+
 if __name__ == "__main__":
     main()

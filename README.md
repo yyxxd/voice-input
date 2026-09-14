@@ -1,11 +1,11 @@
 # Voice Input Bridge 🎙️
 
-> **手机语音秒变电脑打字**：电脑没有麦克风也能用！把手机变成你的 Linux 专属无线语音输入法。  
-> 利用手机端极高精度的输入法（豆包、微信输入法、讯飞、Gboard 等），通过局域网秒级上屏到 Linux 当前光标输入框与剪贴板。
+> **手机语音秒变电脑打字**：电脑没有麦克风也能用！把手机变成你的专属无线语音输入法（支持 **Linux** 与 **Windows**）。  
+> 利用手机端极高精度的输入法（豆包、微信输入法、讯飞、Gboard 等），通过局域网秒级上屏到当前光标输入框与剪贴板。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python: 3.8+](https://img.shields.io/badge/Python-3.8+-green.svg)]()
-[![Platform: Linux Wayland](https://img.shields.io/badge/Platform-Linux%20Wayland-orange.svg)]()
+[![Platform: Linux / Windows](https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-blue.svg)]()
 
 ---
 
@@ -28,19 +28,24 @@
 
 ## 🚀 怎么使用？
 
-### 第一步：电脑启动（只需 1 条命令）
+### 第一步：电脑启动（只需 1 条命令或双击）
 
 通过终端克隆并运行交互式控制中心：
 
 ```bash
 git clone https://github.com/yyxxd/voice-input.git
 cd voice-input
+
+# 🐧 Linux 用户运行:
 ./menu.sh
+
+# 🪟 Windows 用户运行:
+menu.bat
 ```
 
-> **🖥️ 偏好图形界面？**
-> 在文件管理器中直接双击 **`voice-input.desktop`**（或双击 `menu.sh`），会自动弹开终端控制中心窗口！
-
+> **🖥️ 偏好图形界面直接双击？**
+> - **Linux**：在文件管理器中双击 **`voice-input.desktop`** 或 `menu.sh`。
+> - **Windows**：直接双击 **`menu.bat`** 即可打开中文控制面板！
 首次运行时，脚本会**自动静默自检依赖**（若缺少工具会自动提示并一键安装，总大小 < 200 KB）。  
 终端随后将展示一个清晰的动态仪表盘与手机连接二维码：
 
@@ -84,47 +89,61 @@ cd voice-input
 ### 进阶使用：开机静默后台常驻
 
 当你觉得好用、想每天随开随用时：
-在 `./menu.sh` 菜单中输入 **`3`**，一键注册为系统服务（Systemd）。从此电脑开机自动在后台静默运行，无需打开任何黑框终端，手机随时随地连入打字。
-
+- **Linux**：在 `./menu.sh` 菜单中输入 **`3`**，一键注册为 Systemd 用户服务；
+- **Windows**：在 `menu.bat` 菜单中输入 **`5`**，一键开启用户级静默自启（免管理员权限，开机自动通过 `pythonw.exe` 启动，无任何黑框窗口）。从此电脑开机自动在后台静默常驻，手机随时随地连入打字。
 ---
 
 ## 🔬 技术实现与进阶说明
 
 ### 1. 系统要求与桌面环境兼容性
-
-- **当前主要验证环境**：Linux Wayland（**Hyprland**、**Sway** 等基于 wlroots 的平铺/动态桌面）
-- **Python 版本**：Python 3.8+（纯标准库，无需 `pip install` 任何第三方包）
-- **系统依赖包**：
-  - `wl-clipboard`：提供 Wayland 原生剪贴板读写能力（`wl-copy` / `wl-paste`）
-  - `wtype`：基于 Wayland `virtual-keyboard-v1` 协议的原生按键模拟工具（用于模拟上屏粘贴）
-  - `libnotify`（`notify-send`）：用于在“仅剪贴板”模式下向电脑桌面发送即时通知
-  - `qrencode`：用于在终端打印高对比度 UTF-8 字符二维码
-
-#### 🖥️ 各桌面环境兼容性现状与已知限制
+- **支持平台**：
+  - **Windows**：Windows 10 / 11（**无需安装任何额外依赖**，纯 Python 标准库开箱即用）
+  - **Linux**：Linux Wayland（**Hyprland**、**Sway** 等基于 wlroots 的平铺/动态桌面）
+- **Python 版本**：Python 3.8+（纯标准库实现，零 pip 依赖）
+- **系统依赖说明**：
+  - **Windows**：直接使用系统内置 Win32 API (`ctypes`)，0 额外安装项；可选安装 `qrcode`（`pip install qrcode`）以在终端中渲染二维码；
+  - **Linux**：使用 `wl-clipboard`（剪贴板）、`wtype`（按键模拟）、`libnotify`（通知）、`qrencode`（二维码）。
 
 | 桌面环境类别 | 代表桌面 / 系统 | 自动打字上屏 | 剪贴板写入 | 说明与限制 |
 | :--- | :--- | :---: | :---: | :--- |
+| **Windows 10 / 11** | 微信、记事本、浏览器、Windows Terminal、SSH 等 | ✅ 支持 | ✅ 支持 | 原生双通道支持，纯 Python 标准库驱动，终端/SSH 自动模拟 `Ctrl+Shift+V`，普通软件自动模拟 `Ctrl+V`，免装第三方包。 |
 | **wlroots 平铺桌面** | Hyprland, Sway, Wayfire | ✅ 支持 | ✅ 支持 | 原生适配环境，按键模拟与剪贴板均完美工作。 |
 | **GNOME (Wayland)** | Ubuntu, Fedora 默认桌面 | ⚠️ 限制 | ✅ 支持 | GNOME (Mutter) 出于安全策略未开放 `virtual-keyboard` 协议，`wtype` 无法模拟按键。文字可正常写入剪贴板，但需手动 `Ctrl+V` 粘贴。未来计划通过 `ydotool` 驱动统一支持。 |
 | **KDE Plasma (Wayland)** | Kubuntu, openSUSE | ⚠️ 部分支持 | ✅ 支持 | 支持度取决于 KDE 版本对虚拟键盘协议的支持情况，部分场景按键可能响应不及时。 |
 | **传统 X11 桌面** | XFCE, MATE, Cinnamon 等 | ❌ 暂不支持 | ❌ 暂不支持 | 核心依赖基于 Wayland 原生协议。若需在 X11 下使用，需手动将底层调用替换为 `xclip` 与 `xdotool`。欢迎社区 PR。 |
 ### 2. 双通道无损上屏策略 (Dual-Channel Strategy)
 
-为什么不直接用 `wtype` 打字，而采用“剪贴板 + 模拟粘贴”？
+为什么不直接模拟敲字，而采用“剪贴板 + 模拟粘贴”？
 - **直接击键模拟缺陷**：直接模拟输入中文容易遇到 Unicode 编码截断、打字速度缓慢以及与宿主机输入法候选词冲突的问题。
 - **双通道方案优势**：
-  1. **无条件写入剪贴板**：收到请求后 20ms 内通过 `wl-copy` 写入 Wayland 剪贴板，保障数据物理不丢失；
-  2. **智能自适应按键触发**：自动探测电脑当前聚焦的窗口类型。若当前焦点处于终端（Alacritty、Kitty、Foot 等），自动模拟 `Ctrl+Shift+V`；若处于浏览器、聊天软件或普通文本框，自动模拟 `Ctrl+V`，彻底解决终端无法粘贴的问题；
-  3. **模式分流反馈**：在“直接上屏”模式下电脑静默输入；在“仅剪贴板”模式下，电脑屏幕自动通过 `notify-send` 弹出轻量通知，清晰告知内容已复制；
-  4. **非阻塞音频反馈**：异步调用 PipeWire（`pw-play`）播放轻微音效，提供盲打听觉确认。
-### 3. 移动端高保真交互设计
+  1. **无条件写入剪贴板**：收到请求后 20ms 内写入系统剪贴板（Linux 原生 `wl-copy`，Windows 原生 Win32 API），保障数据物理不丢失；
+  2. **智能自适应按键触发**：自动探测电脑当前聚焦的窗口类型。若当前焦点处于终端（Windows Terminal、Alacritty、Kitty、PuTTY 等），自动模拟 `Ctrl+Shift+V`；若处于浏览器、聊天软件或普通文本框，自动模拟 `Ctrl+V`，彻底解决终端无法粘贴的问题；
+  3. **手机端清晰状态反馈**：电脑端静默输入，不再弹出打扰视线的系统气泡通知；手机端干脆利落显示“已发送”，状态一目了然；
+  4. **非阻塞清脆按键音反馈**：文字处理完毕后，异步播放一声轻快的客制化机械轴回车微敲击音（`pop.wav`），提供盲打听觉确认。
+
+### 3. 音效自定义与切换指引 🎵
+
+项目默认采用 **Tealios V2 客制化机械轴大键位 Enter 音**（`pop.wav`），非常清脆利落。
+
+如果你喜欢其他敲击风格，项目在 `sounds_preview/` 目录下备选了多款不同质感的音频：
+- **`1_清脆点击_windows_click.wav`**：经典极简清脆（Windows 官方导航点击声，极短极脆）；
+- **`2_极简敲击_minimal_enter.wav`**：微型机械清响（来自 Mechvibes Minimal 调教）；
+- **`3_真实机械轴_cream_enter.wav`**：高级机械轴实录（NovelKeys Cream 沉闷带脆）；
+- **`4_客制化轴_tealios_enter.wav`**：顶级客制化机械轴 Enter 键实录（当前默认）。
+
+**如何切换音效？**
+只需将你喜欢的 `.wav` 音频文件**直接复制并重命名覆盖项目根目录下的 `pop.wav`**，重启服务后即可立即生效！
+（若想完全静音，也可在启动时加上 `--no-sound` 参数）。
+
+### 4. 移动端高保真交互设计
 
 - **底部吸附底栏（Docked Footer）**：控制按钮紧贴大拇指黄金操作区，避免手机软键盘弹起时视口遮挡。
 - **软键盘焦点保活（Focus Retention）**：通过拦截 `pointerdown` 默认失焦事件，彻底解决移动端浏览器点击按钮后输入法键盘强制收起的痛点。
 - **智能偏好持久化（Preferences Persistence）**：支持独立开启“自动清空”与“自动回车”，偏好自动保存在手机本地 `localStorage`，无需每次重复设置。
 - **深浅双主题系统**：遵循 Apple / Linear 级 Design Tokens，支持右上角一键切换主题并持久化在本地。
 - **本地历史记录**：所有记录保存在手机浏览器的 `localStorage` 中，支持统计字数、时间、单条一键重发与清空。
-### 4. 命令行参数与自定义配置
+
+### 5. 命令行参数与自定义配置
 
 直接运行后端核心脚本时支持的参数：
 
