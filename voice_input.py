@@ -156,6 +156,31 @@ def inject_text(text: str, mode: str = "auto"):
     return result
 
 # ---------------------------------------------------------
+# 2.1 电脑端即时音频反馈
+# ---------------------------------------------------------
+
+ENABLE_SOUND = True
+SOUND_FILE = "/usr/share/sounds/freedesktop/stereo/audio-volume-change.oga"
+
+def play_feedback_sound():
+    """异步非阻塞播放轻微清脆的键盘上屏音效"""
+    global ENABLE_SOUND
+    if not ENABLE_SOUND or not os.path.exists(SOUND_FILE):
+        return
+    # 优先使用 pw-play (PipeWire)，回退使用 paplay
+    player = "pw-play" if os.path.exists("/usr/bin/pw-play") else ("paplay" if os.path.exists("/usr/bin/paplay") else None)
+    if not player:
+        return
+    try:
+        subprocess.Popen(
+            [player, SOUND_FILE],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=APP_ENV
+        )
+    except Exception:
+        pass
+# ---------------------------------------------------------
 # 3. 手机端 Web 界面 HTML (纯单文件嵌入)
 # ---------------------------------------------------------
 
@@ -1028,6 +1053,8 @@ class VoiceRequestHandler(BaseHTTPRequestHandler):
 
                 # 执行注入
                 inject_res = inject_text(text, mode)
+                if inject_res["ok"]:
+                    play_feedback_sound()
                 self.send_response(200 if inject_res["ok"] else 500)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 resp_bytes = json.dumps(inject_res).encode("utf-8")
@@ -1053,9 +1080,13 @@ def main():
     parser.add_argument("--host", type=str, default="0.0.0.0", help="监听地址 (默认 0.0.0.0)")
     parser.add_argument("--fallback-port", type=int, default=53317, help="端口被占用时的自动回退端口")
     parser.add_argument("--display-ip", type=str, default="100.66.1.4", help="优先展示的连接 IP (如节点小宝地址)")
+    parser.add_argument("--sound", dest="sound", action="store_true", default=True, help="启用电脑端文字上屏提示音 (默认启用)")
+    parser.add_argument("--no-sound", dest="sound", action="store_false", help="禁用电脑端文字上屏提示音")
     args = parser.parse_args()
     port = args.port
     server = None
+    global ENABLE_SOUND
+    ENABLE_SOUND = args.sound
 
     # 尝试绑定端口
     try:

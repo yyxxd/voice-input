@@ -59,13 +59,19 @@
 
 ## 🚀 快速上手
 
-### 1. 运行服务
+### 方式一：一键自动安装与自启（推荐）
+
+无需任何繁琐配置，直接运行内置安装脚本（自动安装依赖 + 配置开机自启后台静默运行 + 显示二维码）：
 
 ```bash
-# 进入项目目录
 cd ~/Projects/voice-input
+./install.sh
+```
 
-# 启动服务
+### 方式二：手动前台运行
+
+```bash
+cd ~/Projects/voice-input
 python3 voice_input.py
 ```
 
@@ -90,6 +96,7 @@ python3 voice_input.py [选项]
 | `--fallback-port` | `53317` | 当首选端口被占用时的自动回退端口 |
 | `--display-ip` | 自动探测 | 终端二维码与首选展示的 IP 地址（如节点小宝虚拟 IP：`100.66.1.4`） |
 | `--host` | `0.0.0.0` | 监听的主机地址（`0.0.0.0` 表示监听所有网卡） |
+| `--sound` / `--no-sound` | 启用 | 电脑端文字上屏成功时的轻微清脆提示音 |
 
 **示例（指定节点小宝虚拟组网地址）：**
 ```bash
@@ -98,14 +105,21 @@ python3 voice_input.py --display-ip 100.66.1.4
 
 ---
 
-## 🔄 配置开机自启动 (Systemd User Service)
+## 🔄 开机自启动与快捷管理
 
-测试满意后，可将其配置为当前用户的开机自启后台服务：
+如果使用了 `./install.sh`，服务已自动配置为系统开机静默运行。
 
-### 1. 复制服务配置文件
-```bash
-mkdir -p ~/.config/systemd/user/
-cp ~/Projects/voice-input/voice-input.service ~/.config/systemd/user/
+### 常用管理命令
+
+| 操作 | 命令 |
+| :--- | :--- |
+| **随时看连接二维码** | `./qr.sh` |
+| **查看后台服务状态** | `systemctl --user status voice-input` |
+| **重启服务** | `systemctl --user restart voice-input` |
+| **停止服务** | `systemctl --user stop voice-input` |
+| **彻底卸载自启服务** | `./uninstall.sh` |
+
+### 手动配置 Systemd 服务（可选）
 ```
 
 ### 2. （可选）核对服务参数
