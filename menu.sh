@@ -90,7 +90,7 @@ is_autostart_enabled() {
 
 ensure_dependencies() {
     local missing=()
-    for cmd in wl-copy wtype qrencode python3; do
+    for cmd in wl-copy wtype qrencode python3 notify-send; do
         if ! command -v "$cmd" &>/dev/null; then
             missing+=("$cmd")
         fi
@@ -113,11 +113,11 @@ ensure_dependencies() {
     echo -e "${C_CYAN}└─────────────────────────────────────────────────────────────┘${C_RESET}"
 
     if command -v pacman &>/dev/null; then
-        sudo pacman -S --noconfirm --needed wl-clipboard wtype qrencode python
+        sudo pacman -S --noconfirm --needed wl-clipboard wtype qrencode python libnotify
     elif command -v apt-get &>/dev/null; then
-        sudo apt-get update -qq && sudo apt-get install -y wl-clipboard wtype qrencode python3
+        sudo apt-get update -qq && sudo apt-get install -y wl-clipboard wtype qrencode python3 libnotify-bin
     elif command -v dnf &>/dev/null; then
-        sudo dnf install -y wl-clipboard wtype qrencode python3
+        sudo dnf install -y wl-clipboard wtype qrencode python3 libnotify
     else
         echo -e "${C_RED}❌ 未能识别系统包管理器，请手动安装: ${missing[*]}${C_RESET}"
         read -n 1 -s -r -p "按任意键返回..."

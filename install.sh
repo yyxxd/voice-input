@@ -16,7 +16,7 @@ echo "============================================================"
 # 1. 检查必备依赖
 echo "[1/4] 检查系统环境与依赖..."
 MISSING_PKGS=()
-for cmd in wl-copy wtype qrencode python3; do
+for cmd in wl-copy wtype qrencode python3 notify-send; do
     if ! command -v "$cmd" &>/dev/null; then
         MISSING_PKGS+=("$cmd")
     fi
@@ -26,17 +26,17 @@ if [ ${#MISSING_PKGS[@]} -gt 0 ]; then
     echo "  ⚠️ 检测到缺少必要依赖: ${MISSING_PKGS[*]}"
     echo "  正在尝试通过系统包管理器安装..."
     if command -v pacman &>/dev/null; then
-        sudo pacman -S --noconfirm wl-clipboard wtype qrencode python
+        sudo pacman -S --noconfirm wl-clipboard wtype qrencode python libnotify
     elif command -v apt-get &>/dev/null; then
-        sudo apt-get update && sudo apt-get install -y wl-clipboard wtype qrencode python3
+        sudo apt-get update && sudo apt-get install -y wl-clipboard wtype qrencode python3 libnotify-bin
     elif command -v dnf &>/dev/null; then
-        sudo dnf install -y wl-clipboard wtype qrencode python3
+        sudo dnf install -y wl-clipboard wtype qrencode python3 libnotify
     else
         echo "  ❌ 未识别的包管理器，请手动安装: ${MISSING_PKGS[*]}"
         exit 1
     fi
 else
-    echo "  ✅ 所有依赖 (wl-clipboard, wtype, qrencode, python3) 已就绪！"
+    echo "  ✅ 所有依赖 (wl-clipboard, wtype, qrencode, python3, libnotify) 已就绪！"
 fi
 
 # 2. 生成并链接 Systemd User Service

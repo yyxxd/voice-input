@@ -4,6 +4,7 @@ Voice Input Bridge for Linux (Wayland / Hyprland)
 手机语音输入直达 Linux 电脑：双端互联，利用手机成熟语音输入法，同步至 Linux 焦点输入框与系统剪贴板。
 """
 import os
+import time
 import sys
 import json
 import signal
@@ -19,16 +20,16 @@ from urllib.parse import urlparse
 # ---------------------------------------------------------
 
 def setup_wayland_env():
-    """确保在 SSH 或无图形子 shell 下也能正确定位 Wayland 会话"""
+    """确保在 SSH、systemd 用户服务或无图形子 shell 下也能正确定位 Wayland 与 D-Bus 会话"""
     env = os.environ.copy()
     uid = os.getuid()
 
     if "XDG_RUNTIME_DIR" not in env:
         env["XDG_RUNTIME_DIR"] = f"/run/user/{uid}"
 
-    if "WAYLAND_DISPLAY" not in env:
-        runtime_path = Path(env["XDG_RUNTIME_DIR"])
-        if runtime_path.exists():
+    runtime_path = Path(env["XDG_RUNTIME_DIR"])
+    if runtime_path.exists():
+        if "WAYLAND_DISPLAY" not in env:
             sockets = [
                 s.name for s in runtime_path.glob("wayland-*")
                 if not s.name.endswith(".lock")
@@ -37,6 +38,21 @@ def setup_wayland_env():
                 # 优先选择数字最小的可用 socket
                 sockets.sort()
                 env["WAYLAND_DISPLAY"] = sockets[0]
+
+        # 补充 Hyprland 实例环境变量，以便 hyprctl 在后台服务中正常调用
+        if "HYPRLAND_INSTANCE_SIGNATURE" not in env:
+            hypr_dir = runtime_path / "hypr"
+            if hypr_dir.exists():
+                hypr_instances = [d for d in hypr_dir.glob("*") if d.is_dir()]
+                if hypr_instances:
+                    hypr_instances.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                    env["HYPRLAND_INSTANCE_SIGNATURE"] = hypr_instances[0].name
+
+        # 补充 D-Bus 会话总线地址，以便 notify-send 正常投递桌面通知
+        if "DBUS_SESSION_BUS_ADDRESS" not in env:
+            bus_sock = runtime_path / "bus"
+            if bus_sock.exists():
+                env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus_sock}"
 
     return env
 
@@ -97,16 +113,90 @@ def get_lan_ips():
 # 2. 文本注入与剪贴板控制
 # ---------------------------------------------------------
 
+# 常见主流 Linux 终端模拟器的 class / app_id
+KNOWN_TERMINAL_CLASSES = {
+    "alacritty", "kitty", "foot", "footclient", "ghostty", "wezterm", "wezterm-gui",
+    "gnome-terminal", "gnome-terminal-server", "org.gnome.terminal", "konsole",
+    "xterm", "uxterm", "rxvt", "urxvt", "terminator", "tilix", "xfce4-terminal",
+    "lxterminal", "mate-terminal", "sakura", "termite", "rio", "contour",
+    "hyper", "tabby", "warp", "blackbox", "ptyxis", "deepin-terminal"
+}
+
+def get_active_window_class() -> str:
+    """探测当前处于焦点的活动窗口 class / app_id"""
+    # 1. 优先尝试 Hyprland (hyprctl)
+    try:
+        proc = subprocess.run(
+            ["hyprctl", "activewindow", "-j"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=APP_ENV,
+            timeout=0.3
+        )
+        if proc.returncode == 0 and proc.stdout:
+            data = json.loads(proc.stdout.decode("utf-8", errors="ignore"))
+            cls = data.get("class") or data.get("initialClass") or ""
+            if cls:
+                return str(cls).strip()
+    except Exception:
+        pass
+
+    # 2. 尝试 Sway (swaymsg)
+    try:
+        proc = subprocess.run(
+            ["swaymsg", "-t", "get_tree"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=APP_ENV,
+            timeout=0.4
+        )
+        if proc.returncode == 0 and proc.stdout:
+            tree = json.loads(proc.stdout.decode("utf-8", errors="ignore"))
+            def find_focused(node):
+                if node.get("focused"):
+                    return node.get("app_id") or (node.get("window_properties") or {}).get("class") or ""
+                for child in node.get("nodes", []) + node.get("floating_nodes", []):
+                    res = find_focused(child)
+                    if res:
+                        return res
+                return ""
+            focused_cls = find_focused(tree)
+            if focused_cls:
+                return str(focused_cls).strip()
+    except Exception:
+        pass
+
+    return ""
+
+def is_terminal_window(window_class: str) -> bool:
+    """判定指定窗口是否为终端模拟器"""
+    if not window_class:
+        return False
+    cls_lower = window_class.lower()
+    if cls_lower in KNOWN_TERMINAL_CLASSES:
+        return True
+    if "terminal" in cls_lower:
+        return True
+    if any(cls_lower.startswith(p) for p in ["alacritty", "kitty", "foot", "ghostty", "wezterm", "term-"]):
+        return True
+    if any(cls_lower.endswith(s) for s in ["-terminal", "-term", ".terminal"]):
+        return True
+    return False
+
 def inject_text(text: str, mode: str = "auto"):
     """
     双通道无损注入逻辑：
     1. 无条件写入 Wayland 剪贴板 (wl-copy) 确保内容不丢失
-    2. 如果 mode == 'auto'，模拟触发 Ctrl+V 粘贴按键 (wtype)
+    2. 如果 mode == 'auto'：
+       - 智能检测活动窗口是否为终端
+       - 终端触发 Ctrl+Shift+V
+       - 普通应用触发 Ctrl+V
     """
     result = {
         "ok": False,
         "copied": False,
         "typed": False,
+        "target_is_terminal": False,
         "error": None
     }
 
@@ -131,11 +221,22 @@ def inject_text(text: str, mode: str = "auto"):
     except FileNotFoundError:
         result["error"] = "系统中未安装 wl-copy，请确认已安装 wl-clipboard"
         return result
-    # 模拟按键 Ctrl+V
+
+    # 模拟按键上屏
     if mode == "auto":
+        active_cls = get_active_window_class()
+        is_term = is_terminal_window(active_cls)
+        result["target_is_terminal"] = is_term
+
+        # 快捷键自适应：终端默认使用 Ctrl+Shift+V，普通软件使用 Ctrl+V
+        if is_term:
+            key_cmd = ["wtype", "-M", "ctrl", "-M", "shift", "-k", "v", "-m", "shift", "-m", "ctrl"]
+        else:
+            key_cmd = ["wtype", "-M", "ctrl", "-k", "v", "-m", "ctrl"]
+
         try:
             proc_type = subprocess.run(
-                ["wtype", "-M", "ctrl", "-k", "v", "-m", "ctrl"],
+                key_cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 env=APP_ENV,
@@ -153,6 +254,24 @@ def inject_text(text: str, mode: str = "auto"):
     result["ok"] = True
     return result
 
+def press_key(key: str = "Return"):
+    """模拟单次物理按键敲击 (如 Return / BackSpace 等)"""
+    try:
+        subprocess.run(
+            ["wtype", "-k", key],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            env=APP_ENV,
+            check=True,
+            timeout=2
+        )
+        return {"ok": True}
+    except subprocess.CalledProcessError as e:
+        return {"ok": False, "error": f"wtype 错误: {e.stderr.decode('utf-8', errors='ignore')}"}
+    except FileNotFoundError:
+        return {"ok": False, "error": "系统中未安装 wtype"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 # ---------------------------------------------------------
 # 2.1 电脑端即时音频反馈
 # ---------------------------------------------------------
@@ -172,6 +291,31 @@ def play_feedback_sound():
     try:
         subprocess.Popen(
             [player, SOUND_FILE],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=APP_ENV
+        )
+    except Exception:
+        pass
+
+# ---------------------------------------------------------
+# 2.2 电脑端桌面通知反馈 (仅在存入剪贴板时提示)
+# ---------------------------------------------------------
+
+def send_desktop_notification(title: str, body: str):
+    """异步非阻塞发送系统桌面通知 (notify-send)"""
+    # 截断过长内容，保持通知卡片紧凑优雅
+    display_body = body if len(body) <= 120 else f"{body[:117]}..."
+    try:
+        subprocess.Popen(
+            [
+                "notify-send",
+                "-a", "Voice Input",
+                "-i", "edit-copy",
+                "-t", "2500",
+                title,
+                display_body
+            ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             env=APP_ENV
@@ -589,9 +733,10 @@ MOBILE_HTML = """<!DOCTYPE html>
 
     .footer-hints {
       display: flex;
-      justify-content: space-between;
+      justify-content: center;
       align-items: center;
-      padding: 0 4px;
+      gap: 20px;
+      padding: 2px 4px;
       font-size: 11px;
       color: var(--text-muted);
     }
@@ -600,6 +745,11 @@ MOBILE_HTML = """<!DOCTYPE html>
       align-items: center;
       gap: 5px;
       cursor: pointer;
+      user-select: none;
+    }
+    .hint-checkbox input[type="checkbox"] {
+      cursor: pointer;
+      accent-color: var(--accent);
     }
 
     /* 顶部微感悬浮 Toast */
@@ -724,11 +874,14 @@ MOBILE_HTML = """<!DOCTYPE html>
       </button>
 
       <div class="footer-hints">
-        <label class="hint-checkbox">
+        <label class="hint-checkbox" title="发送成功后清空手机输入框">
           <input type="checkbox" id="autoClearCheck" checked />
-          <span>发送后自动清空</span>
+          <span>自动清空</span>
         </label>
-        <span id="modeDescription">模式：模拟 Ctrl+V 上屏</span>
+        <label class="hint-checkbox" title="发送成功后在电脑端自动按下回车键">
+          <input type="checkbox" id="autoEnterCheck" />
+          <span>自动回车</span>
+        </label>
       </div>
     </footer>
   </div>
@@ -749,9 +902,9 @@ MOBILE_HTML = """<!DOCTYPE html>
     const historyList = document.getElementById('historyList');
     const historyCount = document.getElementById('historyCount');
     const autoClearCheck = document.getElementById('autoClearCheck');
+    const autoEnterCheck = document.getElementById('autoEnterCheck');
     const statusDot = document.getElementById('statusDot');
     const statusText = document.getElementById('statusText');
-    const modeDescription = document.getElementById('modeDescription');
 
     // 1. 主题初始化与切换 (支持持久化与系统匹配)
     function initTheme() {
@@ -780,12 +933,30 @@ MOBILE_HTML = """<!DOCTYPE html>
       applyTheme(current === 'light' ? 'dark' : 'light');
     }
 
+    // 初始化偏好设置 (自动清空 / 自动回车)
+    function initPreferences() {
+      const savedClear = localStorage.getItem('voice_auto_clear');
+      if (savedClear !== null) {
+        autoClearCheck.checked = savedClear === 'true';
+      }
+      const savedEnter = localStorage.getItem('voice_auto_enter');
+      if (savedEnter !== null) {
+        autoEnterCheck.checked = savedEnter === 'true';
+      }
+    }
+
+    autoClearCheck.addEventListener('change', () => {
+      localStorage.setItem('voice_auto_clear', autoClearCheck.checked);
+    });
+    autoEnterCheck.addEventListener('change', () => {
+      localStorage.setItem('voice_auto_enter', autoEnterCheck.checked);
+    });
+
     // 2. 模式切换
     function setMode(mode) {
       currentMode = mode;
       document.getElementById('modeAutoBtn').classList.toggle('active', mode === 'auto');
       document.getElementById('modeClipBtn').classList.toggle('active', mode === 'clipboard_only');
-      modeDescription.textContent = mode === 'auto' ? '模式：模拟 Ctrl+V 上屏' : '模式：仅写入电脑剪贴板';
     }
 
     // 3. 文本输入与字数统计
@@ -847,7 +1018,11 @@ MOBILE_HTML = """<!DOCTYPE html>
         const resp = await fetch('/api/type', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: text, mode: currentMode })
+          body: JSON.stringify({
+            text: text,
+            mode: currentMode,
+            enter: autoEnterCheck.checked
+          })
         });
         const data = await resp.json();
 
@@ -978,6 +1153,7 @@ MOBILE_HTML = """<!DOCTYPE html>
 
     // 启动初始化
     initTheme();
+    initPreferences();
     renderHistory();
     setInterval(checkHealth, 5000);
 
@@ -987,7 +1163,7 @@ MOBILE_HTML = """<!DOCTYPE html>
     }
     sendBtn.addEventListener('pointerdown', preventFocusLoss);
     sendBtn.addEventListener('mousedown', preventFocusLoss);
-    document.querySelectorAll('.clear-btn, .segment-btn, .theme-toggle-btn').forEach(el => {
+    document.querySelectorAll('.clear-btn, .segment-btn, .theme-toggle-btn, .hint-checkbox').forEach(el => {
       el.addEventListener('pointerdown', preventFocusLoss);
       el.addEventListener('mousedown', preventFocusLoss);
     });
@@ -1048,6 +1224,7 @@ class VoiceRequestHandler(BaseHTTPRequestHandler):
                 data = json.loads(post_body.decode("utf-8"))
                 text = data.get("text", "")
                 mode = data.get("mode", "auto")
+                auto_enter = bool(data.get("enter", False))
 
                 if not text:
                     self.send_response(400)
@@ -1060,6 +1237,12 @@ class VoiceRequestHandler(BaseHTTPRequestHandler):
                 inject_res = inject_text(text, mode)
                 if inject_res["ok"]:
                     play_feedback_sound()
+                    # 模式为仅剪贴板时，电脑屏幕弹出通知提醒
+                    if mode == "clipboard_only":
+                        send_desktop_notification("已复制到剪贴板", text)
+                    elif mode == "auto" and auto_enter:
+                        time.sleep(0.06)  # 间隔 60ms 确保模拟粘贴按键完全释放与文本完成上屏
+                        press_key("Return")
                 self.send_response(200 if inject_res["ok"] else 500)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 resp_bytes = json.dumps(inject_res).encode("utf-8")
