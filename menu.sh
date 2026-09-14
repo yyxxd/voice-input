@@ -4,6 +4,15 @@
 # Voice Input Bridge - 一体化 TUI 控制中心
 # =========================================================
 
+# 0. 图形界面直接双击自适应唤起终端窗口
+if [ ! -t 0 ] || [ ! -t 1 ]; then
+    for term in alacritty foot kitty ghostty gnome-terminal xfce4-terminal konsole xterm; do
+        if command -v "$term" &>/dev/null; then
+            exec "$term" -e "$0" "$@"
+        fi
+    done
+fi
+
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT="58002"
 FALLBACK_PORT="53317"

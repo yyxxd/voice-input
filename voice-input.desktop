@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Voice Input Bridge
+GenericName=无线语音输入法
+Comment=手机语音秒变电脑打字：把手机变成 Linux 专属高精度无线语音输入法
+Exec=sh -c "cd '%k/..' && ./menu.sh"
+Icon=audio-input-microphone
+Terminal=true
+Type=Application
+Categories=Utility;InputMethod;
+StartupNotify=false
