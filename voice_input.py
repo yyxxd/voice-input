@@ -75,10 +75,8 @@ def get_lan_ips():
     for dev, ip in ips:
         if any(dev.startswith(prefix) for prefix in ["docker", "veth", "br-", "virbr", "tun", "tap", "meta"]):
             continue
-        if ip.startswith("100.66.") or ip == "100.66.1.4":
+        if ip.startswith("192.168."):
             sorted_ips.insert(0, ip)
-        elif ip.startswith("192.168."):
-            sorted_ips.append(ip)
         elif ip.startswith("10.") and not dev.startswith("tun"):
             sorted_ips.append(ip)
         else:
@@ -1086,7 +1084,7 @@ def main():
     parser.add_argument("--port", type=int, default=58002, help="监听端口 (默认 58002)")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="监听地址 (默认 0.0.0.0)")
     parser.add_argument("--fallback-port", type=int, default=53317, help="端口被占用时的自动回退端口")
-    parser.add_argument("--display-ip", type=str, default="100.66.1.4", help="优先展示的连接 IP (如节点小宝地址)")
+    parser.add_argument("--display-ip", type=str, default=os.environ.get("VOICE_DISPLAY_IP"), help="优先展示的连接 IP (默认自动探测，支持环境变量 VOICE_DISPLAY_IP)")
     parser.add_argument("--sound", dest="sound", action="store_true", default=True, help="启用电脑端文字上屏提示音 (默认启用)")
     parser.add_argument("--no-sound", dest="sound", action="store_false", help="禁用电脑端文字上屏提示音")
     args = parser.parse_args()

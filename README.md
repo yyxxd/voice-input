@@ -74,7 +74,7 @@ cd ~/Projects/voice-input
 ### 2. 手机连接并输入
 
 1. 确保手机和电脑连入同一 Wi-Fi，或开启了相同的虚拟组网（如节点小宝、Tailscale）。
-2. 手机扫描终端中输出的**二维码**，或在手机浏览器中打开显示的 IP 地址（例如 `http://192.168.31.58:58002` 或节点小宝 `http://100.66.1.4:58002`）。
+2. 手机扫描终端中输出的**二维码**，或在手机浏览器中打开显示的 IP 地址（例如 `http://192.168.1.100:58002`）。
 3. 电脑上将鼠标光标点进任意输入框（浏览器搜索框、聊天窗口、VS Code 或终端）。
 4. 在手机页面里点击输入框，唤出手机键盘并**长按语音键说话**，说完点击**「发送至电脑」**即可实时上屏！
 
@@ -90,13 +90,13 @@ python3 voice_input.py [选项]
 | :--- | :--- | :--- |
 | `--port` | `58002` | 服务监听端口（默认 58002，若被占用会自动平滑切至 `--fallback-port`） |
 | `--fallback-port` | `53317` | 当首选端口被占用时的自动回退端口 |
-| `--display-ip` | 自动探测 | 终端二维码与首选展示的 IP 地址（如节点小宝虚拟 IP：`100.66.1.4`） |
+| `--display-ip` | 自动探测 | 终端二维码与首选展示的 IP 地址（可自定义局域网或虚拟组网 IP） |
 | `--host` | `0.0.0.0` | 监听的主机地址（`0.0.0.0` 表示监听所有网卡） |
 | `--sound` / `--no-sound` | 启用 | 电脑端文字上屏成功时的轻微清脆提示音 |
 
-**示例（指定节点小宝虚拟组网地址）：**
+**示例（手动指定展示 IP 地址）：**
 ```bash
-python3 voice_input.py --display-ip 100.66.1.4
+python3 voice_input.py --display-ip 192.168.1.100
 ```
 
 ---
@@ -127,7 +127,7 @@ After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /home/yy/Projects/voice-input/voice_input.py --display-ip 100.66.1.4
+ExecStart=/usr/bin/python3 %h/Projects/voice-input/voice_input.py
 Restart=always
 RestartSec=3
 Environment=PYTHONUNBUFFERED=1

@@ -4,7 +4,7 @@ After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /home/yy/Projects/voice-input/voice_input.py --port 58002 --display-ip 100.66.1.4
+ExecStart=/usr/bin/python3 %h/Projects/voice-input/voice_input.py
 Restart=always
 RestartSec=3
 Environment=PYTHONUNBUFFERED=1

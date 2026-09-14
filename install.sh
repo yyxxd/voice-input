@@ -50,7 +50,7 @@ After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 ${PROJECT_DIR}/voice_input.py --display-ip 100.66.1.4
+ExecStart=${PYTHON_BIN} ${PROJECT_DIR}/voice_input.py
 Restart=always
 RestartSec=3
 Environment=PYTHONUNBUFFERED=1
@@ -76,11 +76,8 @@ fi
 # 4. 显示连接二维码与说明
 echo "[4/4] 生成手机连接二维码..."
 echo "============================================================"
-LAN_IP=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -E '^192\.168\.|^10\.' | head -n 1 || echo "127.0.0.1")
-DISPLAY_IP="100.66.1.4"
-if ! ping -c 1 -W 1 "${DISPLAY_IP}" &>/dev/null; then
-    DISPLAY_IP="${LAN_IP}"
-fi
+LAN_IP=$(ip -4 addr show 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -E '^192\.168\.|^10\.' | head -n 1 || true)
+DISPLAY_IP="${VOICE_DISPLAY_IP:-${LAN_IP:-127.0.0.1}}"
 
 ACCESS_URL="http://${DISPLAY_IP}:58002"
 echo " • 手机直连地址: ${ACCESS_URL}"

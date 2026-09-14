@@ -27,19 +27,16 @@ C_GRAY="\033[90m"
 # ---------------------------------------------------------
 
 get_connection_ip() {
-    # 优先使用节点小宝虚拟 IP (若连通)
-    if ping -c 1 -W 1 100.66.1.4 &>/dev/null; then
-        echo "100.66.1.4"
+    if [ -n "$VOICE_DISPLAY_IP" ]; then
+        echo "$VOICE_DISPLAY_IP"
         return
     fi
-    # 其次取物理局域网 IP (192.168.x 或 10.x)
     local lan_ip
     lan_ip=$(ip -4 addr show 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -E '^192\.168\.|^10\.' | head -n 1 || true)
-    if [ -n "$lan_ip" ]; then
-        echo "$lan_ip"
-        return
+    if [ -z "$lan_ip" ]; then
+        lan_ip=$(ip -4 addr show 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n 1 || true)
     fi
-    echo "127.0.0.1"
+    echo "${lan_ip:-127.0.0.1}"
 }
 
 is_service_running() {
