@@ -90,16 +90,24 @@ cd voice-input
 
 ## 🔬 技术实现与进阶说明
 
-### 1. 系统要求与环境
+### 1. 系统要求与桌面环境兼容性
 
-- **系统平台**：Linux（Wayland 会话，已在 Hyprland、Sway 验证通过，兼容 GNOME Wayland / KDE Wayland）
+- **当前主要验证环境**：Linux Wayland（**Hyprland**、**Sway** 等基于 wlroots 的平铺/动态桌面）
 - **Python 版本**：Python 3.8+（纯标准库，无需 `pip install` 任何第三方包）
-- **轻量依赖包**：
+- **系统依赖包**：
   - `wl-clipboard`：提供 Wayland 原生剪贴板读写能力（`wl-copy` / `wl-paste`）
-  - `wtype`：基于 Wayland virtual-keyboard 协议的原生按键模拟工具（用于模拟上屏粘贴）
+  - `wtype`：基于 Wayland `virtual-keyboard-v1` 协议的原生按键模拟工具（用于模拟上屏粘贴）
   - `libnotify`（`notify-send`）：用于在“仅剪贴板”模式下向电脑桌面发送即时通知
   - `qrencode`：用于在终端打印高对比度 UTF-8 字符二维码
 
+#### 🖥️ 各桌面环境兼容性现状与已知限制
+
+| 桌面环境类别 | 代表桌面 / 系统 | 自动打字上屏 | 剪贴板写入 | 说明与限制 |
+| :--- | :--- | :---: | :---: | :--- |
+| **wlroots 平铺桌面** | Hyprland, Sway, Wayfire | ✅ 支持 | ✅ 支持 | 原生适配环境，按键模拟与剪贴板均完美工作。 |
+| **GNOME (Wayland)** | Ubuntu, Fedora 默认桌面 | ⚠️ 限制 | ✅ 支持 | GNOME (Mutter) 出于安全策略未开放 `virtual-keyboard` 协议，`wtype` 无法模拟按键。文字可正常写入剪贴板，但需手动 `Ctrl+V` 粘贴。未来计划通过 `ydotool` 驱动统一支持。 |
+| **KDE Plasma (Wayland)** | Kubuntu, openSUSE | ⚠️ 部分支持 | ✅ 支持 | 支持度取决于 KDE 版本对虚拟键盘协议的支持情况，部分场景按键可能响应不及时。 |
+| **传统 X11 桌面** | XFCE, MATE, Cinnamon 等 | ❌ 暂不支持 | ❌ 暂不支持 | 核心依赖基于 Wayland 原生协议。若需在 X11 下使用，需手动将底层调用替换为 `xclip` 与 `xdotool`。欢迎社区 PR。 |
 ### 2. 双通道无损上屏策略 (Dual-Channel Strategy)
 
 为什么不直接用 `wtype` 打字，而采用“剪贴板 + 模拟粘贴”？
@@ -146,8 +154,13 @@ python3 voice_input.py [选项]
 </details>
 
 <details>
-<summary><b>Q: 支持 X11 桌面吗？</b></summary>
-目前核心版本针对现代 Linux 主流的 <b>Wayland</b> 桌面环境（基于 <code>wl-copy</code> 与 <code>wtype</code>）进行了极致优化。若在 X11 下使用，可通过替换为 <code>xclip</code> 与 <code>xdotool</code> 快速适配。
+<summary><b>Q: 在 GNOME、KDE 或传统 X11 桌面下能正常用吗？</b></summary>
+<b>目前存在已知限制：</b>
+<ul>
+  <li><b>GNOME (Wayland)</b>：由于 GNOME 合成器安全限制封锁了 <code>wtype</code> 虚拟键盘协议，目前文字能成功进剪贴板，但无法实现“直接光标处打字”，需要配合系统通知手动粘贴。</li>
+  <li><b>传统 X11 桌面</b>：当前版本完全面向现代 Wayland 协议设计。X11 下缺少 <code>wl-copy</code> 与 <code>wtype</code> 命令，暂无法直接开箱即用。</li>
+</ul>
+后续计划引入通用的 <code>ydotool</code> 或 X11 降级分流方案，也非常欢迎有对应桌面环境的用户提交 Issue 或 PR 协助适配！
 </details>
 
 ---
