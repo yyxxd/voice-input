@@ -160,312 +160,561 @@ def inject_text(text: str, mode: str = "auto"):
 # ---------------------------------------------------------
 
 MOBILE_HTML = """<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="light">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <meta name="theme-color" content="#121316" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
+  <meta name="theme-color" content="#F9F8F6" id="themeColorMeta" />
   <title>语音直达电脑</title>
   <style>
-    :root {
-      --bg: #0f1012;
-      --card-bg: #181a1f;
-      --card-border: #262930;
-      --text: #f0f2f5;
-      --text-muted: #88909d;
-      --primary: #3b82f6;
-      --primary-hover: #2563eb;
-      --primary-active: #1d4ed8;
-      --success: #10b981;
-      --danger: #ef4444;
-      --radius: 14px;
+    /* =========================================================
+       Design Tokens & Dual Theme System (UI/UX Pro Max 规范)
+       ========================================================= */
+    :root[data-theme="light"] {
+      --canvas: #F9F8F6;
+      --surface: #FFFFFF;
+      --surface-subtle: #F2EFE9;
+      --border: rgba(0, 0, 0, 0.08);
+      --border-strong: rgba(0, 0, 0, 0.16);
+      --text-primary: #21201D;
+      --text-secondary: #57534D;
+      --text-muted: #8C877D;
+      --accent: #21201D;
+      --accent-text: #FFFFFF;
+      --accent-hover: #3A3834;
+      --success: #16A34A;
+      --danger: #DC2626;
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+      --shadow-md: 0 6px 20px -2px rgba(0, 0, 0, 0.08);
+      --glass-bg: rgba(249, 248, 246, 0.88);
     }
+
+    :root[data-theme="dark"] {
+      --canvas: #0F1117;
+      --surface: #181B24;
+      --surface-subtle: #12141C;
+      --border: rgba(255, 255, 255, 0.08);
+      --border-strong: rgba(255, 255, 255, 0.18);
+      --text-primary: #F0F3F8;
+      --text-secondary: #9AA5B8;
+      --text-muted: #647087;
+      --accent: #3B82F6;
+      --accent-text: #FFFFFF;
+      --accent-hover: #2563EB;
+      --success: #10B981;
+      --danger: #EF4444;
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+      --shadow-md: 0 8px 24px -4px rgba(0, 0, 0, 0.5);
+      --glass-bg: rgba(15, 17, 23, 0.88);
+    }
+
     * {
       box-sizing: border-box;
       margin: 0;
       padding: 0;
       -webkit-tap-highlight-color: transparent;
     }
-    body {
-      background-color: var(--bg);
-      color: var(--text);
+
+    html, body {
+      height: 100%;
+      height: 100dvh;
+      overflow: hidden;
+      background-color: var(--canvas);
+      color: var(--text-primary);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-      min-height: 100vh;
+      transition: background-color 0.25s ease, color 0.25s ease;
+    }
+
+    .app-container {
       display: flex;
       flex-direction: column;
-      padding: 16px;
+      height: 100%;
+      padding-top: env(safe-area-inset-top, 0px);
+      position: relative;
     }
+
+    /* 顶部毛玻璃导航 */
     header {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 6px 0 14px 0;
+      padding: 12px 18px;
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      background: var(--glass-bg);
+      border-bottom: 1px solid var(--border);
+      z-index: 20;
+      flex-shrink: 0;
     }
+
     .brand {
       display: flex;
       align-items: center;
-      gap: 8px;
-      font-weight: 600;
-      font-size: 1.15rem;
-      letter-spacing: -0.01em;
+      gap: 10px;
     }
-    .status-badge {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 0.8rem;
-      color: var(--text-muted);
-      background: var(--card-bg);
-      padding: 4px 10px;
-      border-radius: 999px;
-      border: 1px solid var(--card-border);
-    }
-    .status-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: var(--success);
-      box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
-    }
-    .status-dot.offline {
-      background: var(--danger);
-      box-shadow: 0 0 8px rgba(239, 68, 68, 0.6);
-    }
-    .main-card {
-      background: var(--card-bg);
-      border: 1px solid var(--card-border);
-      border-radius: var(--radius);
-      padding: 14px;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-    }
-    .input-wrapper {
-      position: relative;
-    }
-    textarea {
-      width: 100%;
-      height: 130px;
-      background: #111215;
-      color: var(--text);
-      border: 1px solid var(--card-border);
-      border-radius: 10px;
-      padding: 12px;
-      font-size: 16px;
-      line-height: 1.5;
-      resize: none;
-      outline: none;
-      transition: border-color 0.2s, box-shadow 0.2s;
-    }
-    textarea:focus {
-      border-color: var(--primary);
-      box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
-    }
-    .char-count {
-      position: absolute;
-      right: 10px;
-      bottom: 10px;
-      font-size: 0.75rem;
-      color: var(--text-muted);
-      pointer-events: none;
-    }
-    .controls {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 8px;
-    }
-    .mode-toggle {
-      display: flex;
-      background: #111215;
-      padding: 3px;
-      border-radius: 8px;
-      border: 1px solid var(--card-border);
-      font-size: 0.85rem;
-    }
-    .mode-btn {
-      padding: 6px 12px;
-      border-radius: 6px;
-      border: none;
-      background: transparent;
-      color: var(--text-muted);
-      font-size: 0.82rem;
-      cursor: pointer;
-      transition: all 0.2s;
-    }
-    .mode-btn.active {
-      background: var(--card-bg);
-      color: var(--text);
-      font-weight: 500;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.4);
-    }
-    .action-btn {
-      width: 100%;
-      padding: 14px;
-      background: var(--primary);
-      color: #fff;
-      font-size: 1.05rem;
-      font-weight: 600;
-      border: none;
-      border-radius: 12px;
-      cursor: pointer;
+    .brand-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: 9px;
+      background: var(--surface-subtle);
+      border: 1px solid var(--border);
       display: flex;
       align-items: center;
       justify-content: center;
-      gap: 8px;
-      transition: background-color 0.15s, transform 0.1s;
-      box-shadow: 0 4px 14px rgba(59, 130, 246, 0.35);
+      color: var(--accent);
     }
-    .action-btn:active {
-      background: var(--primary-active);
-      transform: scale(0.98);
+    .brand-text {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
     }
-    .action-btn:disabled {
-      background: #2a2d34;
-      color: #555c68;
-      box-shadow: none;
-      cursor: not-allowed;
-    }
-    .quick-bar {
+
+    .header-actions {
       display: flex;
-      justify-content: space-between;
       align-items: center;
-      padding: 0 4px;
+      gap: 8px;
     }
-    .checkbox-label {
+
+    .theme-toggle-btn {
+      width: 34px;
+      height: 34px;
+      border-radius: 9px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .theme-toggle-btn:active {
+      transform: scale(0.92);
+    }
+
+    .status-pill {
       display: flex;
       align-items: center;
       gap: 6px;
-      font-size: 0.85rem;
-      color: var(--text-muted);
-      user-select: none;
-      cursor: pointer;
+      padding: 5px 10px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      font-weight: 500;
     }
-    .clear-link {
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 6px var(--success);
+    }
+    .status-dot.offline {
+      background: var(--danger);
+      box-shadow: 0 0 6px var(--danger);
+    }
+
+    /* 中部滚动内容区 */
+    main {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .input-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 16px;
+      box-shadow: var(--shadow-sm);
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .input-card:focus-within {
+      border-color: var(--border-strong);
+      box-shadow: var(--shadow-md);
+    }
+
+    .textarea-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 130px;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: var(--text-primary);
+      font-size: 17px;
+      line-height: 1.7;
+      letter-spacing: -0.01em;
+      resize: none;
+      font-family: inherit;
+    }
+    textarea::placeholder {
+      color: var(--text-muted);
+      opacity: 0.7;
+    }
+
+    .textarea-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 6px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    /* 历史记录 */
+    .history-section {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .history-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      padding: 0 4px;
+    }
+    .history-header-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .clear-history-link {
       background: none;
       border: none;
       color: var(--text-muted);
-      font-size: 0.85rem;
+      font-size: 12px;
       cursor: pointer;
-      padding: 4px;
+      padding: 2px 4px;
     }
-    .clear-link:active {
+    .clear-history-link:active {
       color: var(--danger);
-    }
-    .history-card {
-      margin-top: 16px;
-      background: var(--card-bg);
-      border: 1px solid var(--card-border);
-      border-radius: var(--radius);
-      padding: 14px;
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-    .history-title {
-      font-size: 0.85rem;
-      color: var(--text-muted);
-      font-weight: 500;
-      display: flex;
-      justify-content: space-between;
     }
     .history-list {
       display: flex;
       flex-direction: column;
       gap: 8px;
-      overflow-y: auto;
-      max-height: 220px;
     }
     .history-item {
-      background: #111215;
-      padding: 8px 12px;
-      border-radius: 8px;
-      font-size: 0.88rem;
-      line-height: 1.4;
-      border-left: 3px solid var(--primary);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
       cursor: pointer;
-      word-break: break-all;
+      transition: background-color 0.15s, transform 0.1s;
     }
     .history-item:active {
-      background: #1e2127;
+      background: var(--surface-subtle);
+      transform: scale(0.99);
     }
-    .toast {
+    .history-item-body {
+      font-size: 14px;
+      color: var(--text-primary);
+      line-height: 1.5;
+      word-break: break-all;
+    }
+    .history-item-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .history-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .history-action-btn {
+      background: none;
+      border: none;
+      color: var(--accent);
+      font-size: 11px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      padding: 2px;
+    }
+
+    /* 底部悬浮吸附操作区 (Docked Action Bar) - 贴合软键盘与大拇指黄金区 */
+    .docked-footer {
+      background: var(--glass-bg);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border-top: 1px solid var(--border);
+      padding: 12px 18px calc(12px + env(safe-area-inset-bottom, 0px)) 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      z-index: 30;
+      box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.03);
+      flex-shrink: 0;
+    }
+
+    .footer-tools {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+    }
+
+    /* 分段模式控制器 */
+    .segmented-control {
+      display: flex;
+      background: var(--surface-subtle);
+      padding: 3px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      flex: 1;
+    }
+    .segment-btn {
+      flex: 1;
+      padding: 7px 10px;
+      border: none;
+      background: transparent;
+      color: var(--text-secondary);
+      font-size: 12px;
+      font-weight: 500;
+      border-radius: 7px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .segment-btn.active {
+      background: var(--surface);
+      color: var(--text-primary);
+      font-weight: 600;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .clear-btn {
+      padding: 8px 12px;
+      border-radius: 10px;
+      background: var(--surface-subtle);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .clear-btn:active {
+      background: var(--border);
+    }
+
+    /* 大尺寸高触达发送按钮 */
+    .send-btn {
+      width: 100%;
+      height: 48px;
+      background: var(--accent);
+      color: var(--accent-text);
+      border: none;
+      border-radius: 12px;
+      font-size: 16px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      cursor: pointer;
+      box-shadow: 0 3px 12px rgba(0, 0, 0, 0.15);
+      transition: transform 0.1s ease, opacity 0.2s, background-color 0.2s, box-shadow 0.2s;
+    }
+    .send-btn:active {
+      transform: scale(0.98);
+      opacity: 0.92;
+    }
+    .send-btn.success {
+      background: var(--success) !important;
+      color: #FFFFFF !important;
+      box-shadow: 0 3px 12px rgba(22, 163, 74, 0.35);
+    }
+    .send-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .footer-hints {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0 4px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .hint-checkbox {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      cursor: pointer;
+    }
+
+    /* 顶部微感悬浮 Toast */
+    .toast-container {
       position: fixed;
-      bottom: 24px;
+      top: 50px;
       left: 50%;
-      transform: translateX(-50%) translateY(100px);
-      background: #1e2025;
-      border: 1px solid var(--card-border);
-      color: #fff;
-      padding: 10px 18px;
+      transform: translateX(-50%) translateY(-20px);
+      background: var(--text-primary);
+      color: var(--canvas);
+      padding: 8px 16px;
       border-radius: 999px;
-      font-size: 0.9rem;
-      box-shadow: 0 6px 24px rgba(0,0,0,0.5);
-      pointer-events: none;
+      font-size: 13px;
+      font-weight: 500;
+      box-shadow: var(--shadow-md);
       opacity: 0;
+      pointer-events: none;
       transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
       z-index: 100;
+      display: flex;
+      align-items: center;
+      gap: 8px;
     }
-    .toast.show {
+    .toast-container.show {
       transform: translateX(-50%) translateY(0);
       opacity: 1;
     }
   </style>
 </head>
 <body>
-  <header>
-    <div class="brand">
-      <span>🎙️ 语音直达电脑</span>
-    </div>
-    <div class="status-badge">
-      <span class="status-dot" id="statusDot"></span>
-      <span id="statusText">已连接</span>
-    </div>
-  </header>
-
-  <main class="main-card">
-    <div class="input-wrapper">
-      <textarea
-        id="textInput"
-        placeholder="点击调出手机输入法，按住语音键说话..."
-        autofocus
-      ></textarea>
-      <div class="char-count" id="charCount">0 字</div>
-    </div>
-
-    <div class="controls">
-      <div class="mode-toggle">
-        <button class="mode-btn active" id="btnModeAuto" onclick="setMode('auto')">直接上屏</button>
-        <button class="mode-btn" id="btnModeClip" onclick="setMode('clipboard_only')">仅剪贴板</button>
+  <div class="app-container">
+    <!-- 顶部毛玻璃导航 -->
+    <header>
+      <div class="brand">
+        <div class="brand-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+            <line x1="12" x2="12" y1="19" y2="22"/>
+          </svg>
+        </div>
+        <div class="brand-text">语音直达电脑</div>
       </div>
-      <div class="quick-bar">
-        <button class="clear-link" onclick="clearInput()">清空</button>
+
+      <div class="header-actions">
+        <!-- 浅色/深色主题切换 -->
+        <button class="theme-toggle-btn" id="themeBtn" title="切换浅色/深色模式" onclick="toggleTheme()">
+          <svg id="themeIcon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="4"/>
+            <path d="M12 2v2"/><path d="M12 20v2"/>
+            <path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/>
+            <path d="M2 12h2"/><path d="M20 12h2"/>
+            <path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>
+          </svg>
+        </button>
+
+        <div class="status-pill">
+          <span class="status-dot" id="statusDot"></span>
+          <span id="statusText">已连接</span>
+        </div>
       </div>
-    </div>
+    </header>
 
-    <button class="action-btn" id="sendBtn" onclick="handleSend()">
-      <span>发送至电脑</span>
-    </button>
+    <!-- 中间滚动内容区 -->
+    <main>
+      <!-- 沉浸输入卡片 -->
+      <div class="input-card">
+        <div class="textarea-header">
+          <span>输入区</span>
+          <span id="charCount">0 字符</span>
+        </div>
+        <textarea
+          id="textInput"
+          placeholder="调出手机输入法，按住语音键说话..."
+          autofocus
+        ></textarea>
+        <div class="textarea-footer">
+          <span>建议长按输入法语音键连说</span>
+        </div>
+      </div>
 
-    <div class="quick-bar">
-      <label class="checkbox-label">
-        <input type="checkbox" id="autoClearCheck" checked />
-        <span>发送后自动清空输入框</span>
-      </label>
-    </div>
-  </main>
+      <!-- 历史记录区域 -->
+      <div class="history-section">
+        <div class="history-header">
+          <span>最近发送历史</span>
+          <div class="history-header-actions">
+            <span id="historyCount">0 条</span>
+            <button class="clear-history-link" onclick="clearAllHistory()" title="清空全部历史">清空</button>
+          </div>
+        </div>
+        <div class="history-list" id="historyList"></div>
+      </div>
+    </main>
 
-  <section class="history-card">
-    <div class="history-title">
-      <span>最近发送历史 (点击可再次填入)</span>
-      <span id="historyCount">0 条</span>
-    </div>
-    <div class="history-list" id="historyList"></div>
-  </section>
+    <!-- 底部悬浮操作底栏 (位于单手拇指黄金区) -->
+    <footer class="docked-footer">
+      <div class="footer-tools">
+        <!-- 模式分段控制器 -->
+        <div class="segmented-control">
+          <button class="segment-btn active" id="modeAutoBtn" onclick="setMode('auto')">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 10 4 15 9 20"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></svg>
+            直接上屏
+          </button>
+          <button class="segment-btn" id="modeClipBtn" onclick="setMode('clipboard_only')">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>
+            仅剪贴板
+          </button>
+        </div>
 
-  <div class="toast" id="toast"></div>
+        <button class="clear-btn" onclick="clearInput()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+          清空
+        </button>
+      </div>
+
+      <!-- 主发送按钮 -->
+      <button class="send-btn" id="sendBtn" onclick="handleSend()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+        </svg>
+        <span>发送至电脑</span>
+      </button>
+
+      <div class="footer-hints">
+        <label class="hint-checkbox">
+          <input type="checkbox" id="autoClearCheck" checked />
+          <span>发送后自动清空</span>
+        </label>
+        <span id="modeDescription">模式：模拟 Ctrl+V 上屏</span>
+      </div>
+    </footer>
+  </div>
+
+  <!-- 轻量悬浮 Toast -->
+  <div class="toast-container" id="toast">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+    <span id="toastMsg">操作成功</span>
+  </div>
 
   <script>
     let currentMode = 'auto';
@@ -473,61 +722,103 @@ MOBILE_HTML = """<!DOCTYPE html>
     const charCount = document.getElementById('charCount');
     const sendBtn = document.getElementById('sendBtn');
     const toast = document.getElementById('toast');
+    const toastMsg = document.getElementById('toastMsg');
     const historyList = document.getElementById('historyList');
     const historyCount = document.getElementById('historyCount');
     const autoClearCheck = document.getElementById('autoClearCheck');
     const statusDot = document.getElementById('statusDot');
     const statusText = document.getElementById('statusText');
+    const modeDescription = document.getElementById('modeDescription');
 
-    let history = [];
+    // 1. 主题初始化与切换 (支持持久化与系统匹配)
+    function initTheme() {
+      const saved = localStorage.getItem('voice_theme');
+      const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      const theme = saved || (prefersDark ? 'dark' : 'light');
+      applyTheme(theme, false);
+    }
 
-    // 模式切换
+    function applyTheme(theme) {
+      document.documentElement.setAttribute('data-theme', theme);
+      localStorage.setItem('voice_theme', theme);
+      const metaColor = theme === 'light' ? '#F9F8F6' : '#0F1117';
+      document.getElementById('themeColorMeta').setAttribute('content', metaColor);
+
+      const icon = document.getElementById('themeIcon');
+      if (theme === 'dark') {
+        icon.innerHTML = '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>';
+      } else {
+        icon.innerHTML = '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>';
+      }
+    }
+
+    function toggleTheme() {
+      const current = document.documentElement.getAttribute('data-theme') || 'light';
+      applyTheme(current === 'light' ? 'dark' : 'light');
+    }
+
+    // 2. 模式切换
     function setMode(mode) {
       currentMode = mode;
-      document.getElementById('btnModeAuto').classList.toggle('active', mode === 'auto');
-      document.getElementById('btnModeClip').classList.toggle('active', mode === 'clipboard_only');
-      showToast(mode === 'auto' ? '模式：自动触发上屏' : '模式：仅同步剪贴板');
+      document.getElementById('modeAutoBtn').classList.toggle('active', mode === 'auto');
+      document.getElementById('modeClipBtn').classList.toggle('active', mode === 'clipboard_only');
+      modeDescription.textContent = mode === 'auto' ? '模式：模拟 Ctrl+V 上屏' : '模式：仅写入电脑剪贴板';
     }
 
-    // 监听输入
+    // 3. 文本输入与字数统计
     textInput.addEventListener('input', () => {
-      charCount.textContent = `${textInput.value.length} 字`;
+      charCount.textContent = `${textInput.value.length} 字符`;
     });
 
-    // 清空输入
     function clearInput() {
+      if (!textInput.value) return;
       textInput.value = '';
-      charCount.textContent = '0 字';
-      textInput.focus();
+      charCount.textContent = '0 字符';
+      if (document.activeElement !== textInput) {
+        textInput.focus();
+      }
     }
 
-    // 提示通知
+    // 4. Toast 轻量提示 (仅限异常或拦截)
     let toastTimer = null;
     function showToast(msg) {
-      toast.textContent = msg;
+      toastMsg.textContent = msg;
       toast.classList.add('show');
       clearTimeout(toastTimer);
       toastTimer = setTimeout(() => {
         toast.classList.remove('show');
-      }, 1800);
+      }, 2000);
     }
 
-    // 发送逻辑
+    function resetSendBtn() {
+      sendBtn.disabled = false;
+      sendBtn.classList.remove('success');
+      sendBtn.innerHTML = `
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+        </svg>
+        <span>发送至电脑</span>
+      `;
+    }
+
+    // 5. 真实数据发送
     async function handleSend() {
       const text = textInput.value.trim();
       if (!text) {
-        showToast('请先说话或输入文字');
-        textInput.focus();
+        showToast('请先长按输入法语音键说话');
+        if (document.activeElement !== textInput) {
+          textInput.focus();
+        }
         return;
       }
 
-      // 轻微震动反馈
+      // Haptic 反馈
       if (navigator.vibrate) {
-        navigator.vibrate(30);
+        navigator.vibrate(20);
       }
 
       sendBtn.disabled = true;
-      sendBtn.innerHTML = '<span>发送中...</span>';
+      sendBtn.innerHTML = '<span>正在发送...</span>';
 
       try {
         const resp = await fetch('/api/type', {
@@ -538,50 +829,114 @@ MOBILE_HTML = """<!DOCTYPE html>
         const data = await resp.json();
 
         if (data.ok) {
-          showToast(currentMode === 'auto' ? '已上屏并存入剪贴板 ✨' : '已存入电脑剪贴板 📋');
+          // 静默添加历史与清空
           addHistory(text);
           if (autoClearCheck.checked) {
-            clearInput();
+            textInput.value = '';
+            charCount.textContent = '0 字符';
           }
+
+          // 按钮原地轻量反馈 (不弹视线遮挡的 Toast)
+          sendBtn.classList.add('success');
+          const successLabel = currentMode === 'auto' ? '已上屏' : '已存剪贴板';
+          sendBtn.innerHTML = `
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="20 6 9 17 4 12"/>
+            </svg>
+            <span>${successLabel}</span>
+          `;
+
+          setTimeout(() => {
+            resetSendBtn();
+          }, 650);
         } else {
+          resetSendBtn();
           showToast('错误: ' + (data.error || '发送失败'));
         }
       } catch (err) {
+        resetSendBtn();
         showToast('网络连接失败，请检查局域网');
         statusDot.classList.add('offline');
         statusText.textContent = '网络断开';
-      } finally {
-        sendBtn.disabled = false;
-        sendBtn.innerHTML = '<span>发送至电脑</span>';
       }
     }
 
-    // 历史记录
+    // 6. 历史记录 (本地持久化 LocalStorage)
+    function getSavedHistory() {
+      try {
+        return JSON.parse(localStorage.getItem('voice_history') || '[]');
+      } catch {
+        return [];
+      }
+    }
+
+    function saveHistory(list) {
+      try {
+        localStorage.setItem('voice_history', JSON.stringify(list));
+      } catch {}
+    }
+
+    let history = getSavedHistory();
+
     function addHistory(text) {
-      history.unshift(text);
-      if (history.length > 20) history.pop();
+      // 去重置顶
+      history = history.filter(item => item.text !== text);
+      history.unshift({
+        text: text,
+        time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+        count: text.length
+      });
+      if (history.length > 30) history.pop();
+      saveHistory(history);
       renderHistory();
     }
 
     function renderHistory() {
       historyCount.textContent = `${history.length} 条`;
+      if (history.length === 0) {
+        historyList.innerHTML = '<div style="font-size:12px;color:var(--text-muted);text-align:center;padding:12px;">暂无历史记录</div>';
+        return;
+      }
       historyList.innerHTML = history.map((item, idx) => `
-        <div class="history-item" onclick="reuseText(${idx})">${escapeHtml(item)}</div>
+        <div class="history-item" onclick="reuseText(${idx})">
+          <div class="history-item-body">${escapeHtml(item.text)}</div>
+          <div class="history-item-footer">
+            <span>${item.time || ''} · ${item.count || item.text.length}字</span>
+            <div class="history-actions">
+              <button class="history-action-btn" onclick="event.stopPropagation(); reSendText(${idx})">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 10 4 15 9 20"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></svg>
+                重发
+              </button>
+            </div>
+          </div>
+        </div>
       `).join('');
     }
 
     function reuseText(idx) {
-      textInput.value = history[idx];
-      charCount.textContent = `${textInput.value.length} 字`;
+      if (!history[idx]) return;
+      textInput.value = history[idx].text;
+      charCount.textContent = `${textInput.value.length} 字符`;
       textInput.focus();
-      showToast('已重载历史文本');
     }
 
+    function reSendText(idx) {
+      if (!history[idx]) return;
+      textInput.value = history[idx].text;
+      handleSend();
+    }
+
+    function clearAllHistory() {
+      if (history.length === 0) return;
+      history = [];
+      saveHistory(history);
+      renderHistory();
+    }
     function escapeHtml(str) {
       return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     }
 
-    // 心跳状态检查
+    // 7. 心跳状态检查
     async function checkHealth() {
       try {
         const res = await fetch('/api/status', { cache: 'no-store' });
@@ -597,7 +952,22 @@ MOBILE_HTML = """<!DOCTYPE html>
         statusText.textContent = '无法连通';
       }
     }
+
+    // 启动初始化
+    initTheme();
+    renderHistory();
     setInterval(checkHealth, 5000);
+
+    // 8. 软键盘焦点保活拦截：点击按钮阻止失焦，防止软键盘闪退重启
+    function preventFocusLoss(e) {
+      e.preventDefault();
+    }
+    sendBtn.addEventListener('pointerdown', preventFocusLoss);
+    sendBtn.addEventListener('mousedown', preventFocusLoss);
+    document.querySelectorAll('.clear-btn, .segment-btn, .theme-toggle-btn').forEach(el => {
+      el.addEventListener('pointerdown', preventFocusLoss);
+      el.addEventListener('mousedown', preventFocusLoss);
+    });
   </script>
 </body>
 </html>
