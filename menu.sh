@@ -18,7 +18,8 @@ PORT="58002"
 FALLBACK_PORT="53317"
 SERVICE_NAME="voice-input.service"
 USER_SYSTEMD_DIR="${HOME}/.config/systemd/user"
-PYTHON_BIN="$(which python3 || echo "/usr/bin/python3")"
+PYTHON_BIN="$(command -v python3 || echo "/usr/bin/python3")"
+cd "${PROJECT_DIR}"
 
 # ANSI 颜色定义
 C_RESET="\033[0m"
@@ -41,6 +42,11 @@ get_connection_ip() {
         return
     fi
     local lan_ip
+    lan_ip=$("${PYTHON_BIN}" -c 'import voice_input; print(next(iter(voice_input.get_lan_ips()), "127.0.0.1"))' 2>/dev/null)
+    if [ -n "$lan_ip" ]; then
+        echo "$lan_ip"
+        return
+    fi
     lan_ip=$(ip -4 addr show 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -E '^192\.168\.|^10\.' | head -n 1 || true)
     if [ -z "$lan_ip" ]; then
         lan_ip=$(ip -4 addr show 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n 1 || true)
@@ -54,14 +60,6 @@ is_service_running() {
         return 0
     fi
     if curl -s --max-time 0.8 "http://127.0.0.1:${FALLBACK_PORT}/api/status" 2>/dev/null | grep -q '"status":\s*"ok"'; then
-        return 0
-    fi
-    # 2. 检查进程
-    if pgrep -f "voice_input.py" &>/dev/null; then
-        return 0
-    fi
-    # 3. 检查 systemd 用户单元
-    if systemctl --user is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
         return 0
     fi
     return 1
@@ -96,6 +94,10 @@ ensure_dependencies() {
         fi
     done
 
+    if [[ "${XDG_CURRENT_DESKTOP,,}" == *gnome* ]] && ! /usr/bin/python3 -c 'import dbus' 2>/dev/null; then
+        missing+=("python3-dbus")
+    fi
+
     if [ ${#missing[@]} -eq 0 ]; then
         return 0
     fi
@@ -113,11 +115,11 @@ ensure_dependencies() {
     echo -e "${C_CYAN}└─────────────────────────────────────────────────────────────┘${C_RESET}"
 
     if command -v pacman &>/dev/null; then
-        sudo pacman -S --noconfirm --needed wl-clipboard wtype qrencode python libnotify
+        sudo pacman -S --noconfirm --needed wl-clipboard wtype qrencode python python-dbus libnotify
     elif command -v apt-get &>/dev/null; then
-        sudo apt-get update -qq && sudo apt-get install -y wl-clipboard wtype qrencode python3 libnotify-bin
+        sudo apt-get update -qq && sudo apt-get install -y wl-clipboard wtype qrencode python3 python3-dbus libnotify-bin
     elif command -v dnf &>/dev/null; then
-        sudo dnf install -y wl-clipboard wtype qrencode python3 libnotify
+        sudo dnf install -y wl-clipboard wtype qrencode python3 python3-dbus libnotify
     else
         echo -e "${C_RED}❌ 未能识别系统包管理器，请手动安装: ${missing[*]}${C_RESET}"
         read -n 1 -s -r -p "按任意键返回..."
@@ -136,6 +138,8 @@ do_start_service() {
     ensure_dependencies || return
 
     echo -e "\n${C_CYAN}🚀 正在启动 Voice Input Bridge 服务...${C_RESET}"
+
+    systemctl --user import-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE DBUS_SESSION_BUS_ADDRESS 2>/dev/null || true
 
     # 若存在 systemd 单元且文件有效，优先通过 systemd 启动
     if [ -f "${USER_SYSTEMD_DIR}/${SERVICE_NAME}" ]; then
@@ -208,6 +212,7 @@ Environment=PYTHONUNBUFFERED=1
 WantedBy=default.target
 EOF
         systemctl --user daemon-reload
+        systemctl --user import-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE DBUS_SESSION_BUS_ADDRESS 2>/dev/null || true
         systemctl --user enable --now "${SERVICE_NAME}"
         echo -e "${C_GREEN}✅ 已成功注册并开启开机自启服务！${C_RESET}"
     fi
@@ -249,142 +254,146 @@ do_uninstall() {
 # 4. TUI 仪表盘动态渲染
 # ---------------------------------------------------------
 
-draw_dashboard() {
-    clear 2>/dev/null || true
-    local running=false
+# Compact dashboard: connection QR is a separate view so menus fit small screens.
+SELECTED=0
+MENU_ACTIONS=()
+MENU_LABELS=()
+MENU_HINTS=()
+
+build_menu() {
+    MENU_ACTIONS=()
+    MENU_LABELS=()
+    MENU_HINTS=()
     if is_service_running; then
-        running=true
+        RUNNING=true
+        MENU_ACTIONS+=(do_stop_service do_restart_service)
+        MENU_LABELS+=("停止服务" "重启服务")
+        MENU_HINTS+=("关闭后台接收服务" "载入最新代码并重新启动")
+    else
+        RUNNING=false
+        MENU_ACTIONS+=(do_start_service)
+        MENU_LABELS+=("启动后台服务")
+        MENU_HINTS+=("开始接收手机文字")
     fi
-
-    local autostart=false
+    local auto_label="开启开机自启"
+    AUTO_STATUS="未启用"
     if is_autostart_enabled; then
-        autostart=true
+        auto_label="关闭开机自启"
+        AUTO_STATUS="已启用"
     fi
-
-    local conn_ip
-    conn_ip=$(get_connection_ip)
-    local active_port
-    active_port=$(get_active_port)
-    local access_url="http://${conn_ip}:${active_port}"
-
-    # 顶部卡片
-    echo -e "${C_CYAN}┌─────────────────────────────────────────────────────────────┐${C_RESET}"
-    echo -e "${C_CYAN}│${C_BOLD} 🎙️  Voice Input Bridge 控制中心                           ${C_RESET}${C_CYAN}│${C_RESET}"
-    echo -e "${C_CYAN}├─────────────────────────────────────────────────────────────┤${C_RESET}"
-
-    # 状态指示看板
-    local status_line=""
-    if [ "$running" = true ]; then
-        status_line="${C_GREEN}● 运行状态: 运行中 (端口: ${active_port})${C_RESET}"
-    else
-        status_line="${C_YELLOW}○ 运行状态: 未运行${C_RESET}               "
-    fi
-
-    local auto_line=""
-    if [ "$autostart" = true ]; then
-        auto_line="${C_GREEN}● 开机自启: 已启用${C_RESET}"
-    else
-        auto_line="${C_GRAY}○ 开机自启: 未配置${C_RESET}"
-    fi
-
-    echo -e "  ${status_line}     ${auto_line}"
-
-    if [ "$running" = true ]; then
-        echo -e "  ${C_BOLD}📱 手机直连:${C_RESET} ${C_CYAN}${access_url}${C_RESET}"
-        echo -e "${C_CYAN}├─────────────────────────────────────────────────────────────┤${C_RESET}"
-        echo -e "  ${C_DIM}手机扫码直达输入页:${C_RESET}"
-        # 居中缩进打印二维码
-        qrencode -t ANSIUTF8 "${access_url}" 2>/dev/null | sed 's/^/    /' || true
-    else
-        echo -e "${C_CYAN}├─────────────────────────────────────────────────────────────┤${C_RESET}"
-        echo -e "  ${C_YELLOW}💡 服务尚未启动，请按 [1] 启动服务以自动生成连接二维码${C_RESET}"
-    fi
-
-    echo -e "${C_CYAN}├─────────────────────────────────────────────────────────────┤${C_RESET}"
-
-    # 动态自适应菜单
-    if [ "$running" = true ]; then
-        echo -e "  ${C_BOLD}[1] 停止服务${C_RESET}"
-        echo -e "      ${C_GRAY}└─ 关闭当前正在运行的后台服务${C_RESET}"
-        echo -e "  ${C_BOLD}[2] 重启服务${C_RESET}"
-        echo -e "      ${C_GRAY}└─ 重新载入最新代码并重启服务${C_RESET}"
-        if [ "$autostart" = true ]; then
-            echo -e "  ${C_BOLD}[3] 关闭开机自启${C_RESET}"
-            echo -e "      ${C_GRAY}└─ 移除 systemd 开机自启配置${C_RESET}"
-        else
-            echo -e "  ${C_BOLD}[3] 开启开机自启${C_RESET}"
-            echo -e "      ${C_GRAY}└─ 注册为系统服务，开机即静默后台运行${C_RESET}"
-        fi
-        echo -e "  ${C_BOLD}[4] 查看实时日志${C_RESET}"
-        echo -e "      ${C_GRAY}└─ 实时跟踪手机端发来的打字请求与按键记录${C_RESET}"
-        echo -e "  ${C_BOLD}[5] 清理与卸载${C_RESET}"
-        echo -e "      ${C_GRAY}└─ 停止服务并清理系统自启配置文件${C_RESET}"
-        echo -e "  ${C_BOLD}[0] 退出控制台${C_RESET} ${C_DIM}(后台服务继续运行)${C_RESET}"
-    else
-        echo -e "  ${C_BOLD}[1] 启动后台服务${C_RESET}"
-        echo -e "      ${C_GRAY}└─ 在后台运行语音桥接服务，监听 ${PORT} 端口${C_RESET}"
-        echo -e "  ${C_BOLD}[2] 注册并开启开机自启 (推荐)${C_RESET}"
-        echo -e "      ${C_GRAY}└─ 配置为系统服务，开机即静默后台常驻${C_RESET}"
-        echo -e "  ${C_BOLD}[3] 查看历史日志${C_RESET}"
-        echo -e "      ${C_GRAY}└─ 查看最近的服务输出与连接记录${C_RESET}"
-        echo -e "  ${C_BOLD}[4] 清理与卸载${C_RESET}"
-        echo -e "      ${C_GRAY}└─ 清理系统服务与残留配置${C_RESET}"
-        echo -e "  ${C_BOLD}[0] 退出控制台${C_RESET}"
-    fi
-
-    echo -e "${C_CYAN}└─────────────────────────────────────────────────────────────┘${C_RESET}"
+    MENU_ACTIONS+=(do_connection do_toggle_autostart do_view_logs do_uninstall do_exit)
+    MENU_LABELS+=("手机连接 / 二维码" "$auto_label" "查看日志" "清理与卸载" "退出控制台")
+    MENU_HINTS+=("显示所有连接地址与扫码入口" "管理 systemd 用户服务" "检查连接和发送记录" "清理服务配置，保留项目文件" "后台服务继续运行")
+    ACTIVE_PORT=$(get_active_port)
+    ACCESS_URL="http://$(get_connection_ip):${ACTIVE_PORT}"
+    (( SELECTED < ${#MENU_ACTIONS[@]} )) || SELECTED=0
 }
 
-# ---------------------------------------------------------
-# 5. 主循环
-# ---------------------------------------------------------
+do_connection() {
+    clear
+    echo -e "${C_CYAN}${C_BOLD}  手机连接${C_RESET}"
+    echo -e "\n  ${C_CYAN}${ACCESS_URL}${C_RESET}\n"
+    if [ "$RUNNING" = true ]; then
+        qrencode -t ANSIUTF8 "$ACCESS_URL" 2>/dev/null || true
+    else
+        echo "  请先启动后台服务。"
+    fi
+    echo "  手机与电脑需处于同一网络。"
+    echo "  GNOME 终端请选择手机页面的「终端模式」。"
+    read -r -p "  按回车返回..."
+}
+
+do_exit() {
+    echo -e "\n${C_GRAY}已退出控制台，后台服务保持当前状态。${C_RESET}"
+    exit 0
+}
+
+dashboard_content() {
+    echo -e "${C_CYAN}  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
+    echo -e "${C_BOLD}  VOICE INPUT${C_RESET}  ${C_GRAY}手机语音 · 直达电脑${C_RESET}"
+    echo -e "${C_CYAN}  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
+    if [ "$RUNNING" = true ]; then
+        echo -e "  ${C_GREEN}● 运行中${C_RESET}  ${C_GRAY}端口 ${ACTIVE_PORT} · 自启 ${AUTO_STATUS}${C_RESET}"
+    else
+        echo -e "  ${C_YELLOW}○ 已停止${C_RESET}  ${C_GRAY}自启 ${AUTO_STATUS}${C_RESET}"
+    fi
+    echo -e "  ${C_CYAN}${ACCESS_URL}${C_RESET}\n"
+    local i
+    for i in "${!MENU_LABELS[@]}"; do
+        if [ "$i" -eq "$SELECTED" ]; then
+            echo -e "  ${C_CYAN}${C_BOLD}❯ ${MENU_LABELS[$i]}${C_RESET}"
+        else
+            echo -e "    ${MENU_LABELS[$i]}"
+        fi
+    done
+    echo -e "\n  ${C_GRAY}${MENU_HINTS[$SELECTED]}${C_RESET}"
+    echo -e "${C_CYAN}  ──────────────────────────────────────────────${C_RESET}"
+    echo -e "  ${C_DIM}↑ ↓ 选择   Enter 执行   Q 退出${C_RESET}"
+}
+
+# Paint complete screens in one write; arrows only touch the changed rows.
+draw_dashboard() {
+    local frame
+    frame=$(dashboard_content)
+    frame=${frame//$'\n'/$'\033[K\n'}
+    printf '\033[?25l\033[H%b\033[K\033[J\033[s' "$frame"
+}
+
+update_selection() {
+    local previous="$1" frame="" line index
+    for index in "$previous" "$SELECTED"; do
+        if [ "$index" -eq "$SELECTED" ]; then
+            line="  ${C_CYAN}${C_BOLD}❯ ${MENU_LABELS[$index]}${C_RESET}"
+        else
+            line="    ${MENU_LABELS[$index]}"
+        fi
+        printf -v line '\033[%d;1H%b\033[K' "$((7 + index))" "$line"
+        frame+="$line"
+    done
+    printf -v line '\033[%d;1H  %b%s%b\033[K' "$((8 + ${#MENU_LABELS[@]}))" "$C_GRAY" "${MENU_HINTS[$SELECTED]}" "$C_RESET"
+    frame+="$line"
+    printf '%b\033[u' "$frame"
+}
 
 main_loop() {
-    # 捕获 Ctrl+C 安全退出
-    trap 'echo -e "\n\n${C_GRAY}[已退出控制台] 后台服务保持运行状态。${C_RESET}"; exit 0' INT
-
+    trap 'printf "\033[0m\033[?25h"' EXIT
+    trap 'do_exit' INT
+    trap 'draw_dashboard' WINCH
+    build_menu
+    draw_dashboard
     while true; do
-        draw_dashboard
-
-        local running=false
-        if is_service_running; then
-            running=true
+        local key tail previous="$SELECTED"
+        local read_status
+        IFS= read -rsn1 -t 0.5 key
+        read_status=$?
+        if [ "$read_status" -ne 0 ]; then
+            [ "$read_status" -gt 128 ] && continue
+            break
         fi
-
-        echo -n -e "  ${C_BOLD}请输入选项 [0-5]: ${C_RESET}"
-        read -r choice || break
-
-        if [ "$running" = true ]; then
-            case "$choice" in
-                1) do_stop_service ;;
-                2) do_restart_service ;;
-                3) do_toggle_autostart ;;
-                4) do_view_logs ;;
-                5) do_uninstall ;;
-                0|q|Q)
-                    echo -e "\n${C_GREEN}👋 已退出控制台，后台服务继续静默运行。${C_RESET}"
-                    exit 0
-                    ;;
-                *)
-                    echo -e "${C_RED}无效选项，请重新输入${C_RESET}"
-                    sleep 0.6
-                    ;;
-            esac
+        if [[ "$key" == $'\e' ]]; then
+            IFS= read -rsn1 -t 0.15 tail || tail=""
+            if [[ "$tail" == '[' || "$tail" == 'O' ]]; then
+                IFS= read -rsn1 -t 0.15 key || key=""
+                case "$key" in
+                    A) SELECTED=$(( (SELECTED + ${#MENU_ACTIONS[@]} - 1) % ${#MENU_ACTIONS[@]} )) ;;
+                    B) SELECTED=$(( (SELECTED + 1) % ${#MENU_ACTIONS[@]} )) ;;
+                esac
+            fi
         else
-            case "$choice" in
-                1) do_start_service ;;
-                2) do_toggle_autostart ;;
-                3) do_view_logs ;;
-                4) do_uninstall ;;
-                0|q|Q)
-                    echo -e "\n${C_GREEN}👋 已退出控制台。${C_RESET}"
-                    exit 0
+            case "$key" in
+                k) SELECTED=$(( (SELECTED + ${#MENU_ACTIONS[@]} - 1) % ${#MENU_ACTIONS[@]} )) ;;
+                j) SELECTED=$(( (SELECTED + 1) % ${#MENU_ACTIONS[@]} )) ;;
+                "")
+                    printf '\033[?25h\n'
+                    "${MENU_ACTIONS[$SELECTED]}"
+                    build_menu
+                    draw_dashboard
                     ;;
-                *)
-                    echo -e "${C_RED}无效选项，请重新输入${C_RESET}"
-                    sleep 0.6
-                    ;;
+                q|Q) do_exit ;;
             esac
+        fi
+        if [ "$previous" -ne "$SELECTED" ]; then
+            update_selection "$previous"
         fi
     done
 }

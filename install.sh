@@ -6,6 +6,7 @@ set -e
 # =========================================================
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON_BIN="$(command -v python3 || echo /usr/bin/python3)"
 SERVICE_NAME="voice-input.service"
 USER_SYSTEMD_DIR="${HOME}/.config/systemd/user"
 
@@ -22,15 +23,19 @@ for cmd in wl-copy wtype qrencode python3 notify-send; do
     fi
 done
 
+if [[ "${XDG_CURRENT_DESKTOP,,}" == *gnome* ]] && ! /usr/bin/python3 -c 'import dbus' 2>/dev/null; then
+    MISSING_PKGS+=("python3-dbus")
+fi
+
 if [ ${#MISSING_PKGS[@]} -gt 0 ]; then
     echo "  ⚠️ 检测到缺少必要依赖: ${MISSING_PKGS[*]}"
     echo "  正在尝试通过系统包管理器安装..."
     if command -v pacman &>/dev/null; then
-        sudo pacman -S --noconfirm wl-clipboard wtype qrencode python libnotify
+        sudo pacman -S --noconfirm wl-clipboard wtype qrencode python python-dbus libnotify
     elif command -v apt-get &>/dev/null; then
-        sudo apt-get update && sudo apt-get install -y wl-clipboard wtype qrencode python3 libnotify-bin
+        sudo apt-get update && sudo apt-get install -y wl-clipboard wtype qrencode python3 python3-dbus libnotify-bin
     elif command -v dnf &>/dev/null; then
-        sudo dnf install -y wl-clipboard wtype qrencode python3 libnotify
+        sudo dnf install -y wl-clipboard wtype qrencode python3 python3-dbus libnotify
     else
         echo "  ❌ 未识别的包管理器，请手动安装: ${MISSING_PKGS[*]}"
         exit 1
@@ -63,6 +68,7 @@ echo "  ✅ 服务配置已写入: ${USER_SYSTEMD_DIR}/${SERVICE_NAME}"
 
 # 3. 启动并启用服务
 echo "[3/4] 启动后台服务并配置开机自启..."
+systemctl --user import-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE DBUS_SESSION_BUS_ADDRESS 2>/dev/null || true
 systemctl --user daemon-reload
 systemctl --user enable --now "${SERVICE_NAME}"
 
