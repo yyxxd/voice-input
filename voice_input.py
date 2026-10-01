@@ -11,9 +11,11 @@ import signal
 import socket
 import argparse
 import platform
+import threading
+import tempfile
 import subprocess
 from pathlib import Path
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
 # 在无控制台的后台模式 (如 Windows pythonw.exe) 下，将 None 重定向至 devnull 防止写入崩溃
@@ -413,9 +415,9 @@ def inject_text(text: str, mode: str = "auto"):
             return result
         result["copied"] = True
 
-        if mode == "auto":
+        if mode != "clipboard_only":
             cls_name, proc_name = win32_get_active_window_info()
-            is_term = is_terminal_window(cls_name, proc_name)
+            is_term = mode == "terminal" or is_terminal_window(cls_name, proc_name)
             result["target_is_terminal"] = is_term
             try:
                 win32_paste(is_terminal=is_term)
@@ -426,82 +428,78 @@ def inject_text(text: str, mode: str = "auto"):
         result["ok"] = True
         return result
 
-    # Linux 分支 (Wayland wl-copy & wtype)
+    # Clipboard success and keyboard success are reported independently.
     try:
-        proc_copy = subprocess.run(
-            ["wl-copy"],
-            input=text.encode("utf-8"),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            env=APP_ENV,
-            check=True,
-            timeout=2
-        )
+        # wl-copy forks a clipboard owner; a PIPE inherited by that child
+        # would keep subprocess.run waiting for EOF after the parent exits.
+        with tempfile.TemporaryFile() as diagnostics:
+            try:
+                subprocess.run(
+                    ["wl-copy", "--type", "text/plain;charset=utf-8"],
+                    input=text.encode("utf-8"), stdout=subprocess.DEVNULL,
+                    stderr=diagnostics, env=APP_ENV, check=True, timeout=3
+                )
+            except subprocess.CalledProcessError as error:
+                diagnostics.seek(0)
+                error.stderr = diagnostics.read()
+                raise
         result["copied"] = True
-    except subprocess.TimeoutExpired:
-        result["copied"] = True
-    except subprocess.CalledProcessError:
-        result["error"] = "wl-copy 写入剪贴板失败"
+    except (subprocess.SubprocessError, OSError) as error:
+        result["error"] = command_error("剪贴板写入失败", error)
         return result
-    except FileNotFoundError:
-        result["error"] = "系统中未安装 wl-copy，请确认已安装 wl-clipboard"
-        return result
-
-    if mode == "auto":
-        active_cls = get_active_window_class()
-        if not active_cls:
-            result["typed"] = False
-            result["ok"] = True
-            return result
-        is_term = is_terminal_window(active_cls)
-        result["target_is_terminal"] = is_term
-
-        if is_term:
-            key_cmd = ["wtype", "-M", "ctrl", "-M", "shift", "-k", "v", "-m", "shift", "-m", "ctrl"]
-        else:
-            key_cmd = ["wtype", "-M", "ctrl", "-k", "v", "-m", "ctrl"]
-
-        try:
-            proc_type = subprocess.run(
-                key_cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                env=APP_ENV,
-                check=True,
-                timeout=2
-            )
-            result["typed"] = True
-        except subprocess.CalledProcessError as e:
-            result["error"] = f"wtype 错误: {e.stderr.decode('utf-8', errors='ignore')}"
-            return result
-        except FileNotFoundError:
-            result["error"] = "系统中未安装 wtype"
-            return result
 
     result["ok"] = True
+    if mode != "clipboard_only":
+        is_term = mode == "terminal" or is_terminal_window(get_active_window_class())
+        result["target_is_terminal"] = is_term
+        key_result = linux_send_key("terminal" if is_term else "paste")
+        result["typed"] = key_result["ok"]
+        if not key_result["ok"]:
+            result["warning"] = key_result["error"] + "；文字已保存，请在电脑手动粘贴"
     return result
 
+
+def command_error(label, error):
+    if isinstance(error, FileNotFoundError):
+        return f"{label}：缺少 {error.filename}"
+    if isinstance(error, subprocess.TimeoutExpired):
+        return f"{label}：操作超时"
+    detail = getattr(error, "stderr", None)
+    if isinstance(detail, bytes):
+        detail = detail.decode("utf-8", errors="replace")
+    return f"{label}：{(detail or str(error)).strip()}"
+
+
+def linux_send_key(action):
+    desktop = APP_ENV.get("XDG_CURRENT_DESKTOP", "").lower()
+    if "gnome" in desktop:
+        # Use the distro Python to access its optional python3-dbus package.
+        python = "/usr/bin/python3" if os.path.exists("/usr/bin/python3") else sys.executable
+        cmd = [python, str(Path(__file__).with_name("gnome_input.py")), action]
+    elif action == "enter":
+        cmd = ["wtype", "-k", "Return"]
+    else:
+        cmd = ["wtype", "-M", "ctrl"]
+        if action == "terminal":
+            cmd += ["-M", "shift"]
+        cmd += ["-k", "v"]
+        if action == "terminal":
+            cmd += ["-m", "shift"]
+        cmd += ["-m", "ctrl"]
+    try:
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                       env=APP_ENV, check=True, timeout=5)
+        return {"ok": True}
+    except (subprocess.SubprocessError, OSError) as error:
+        return {"ok": False, "error": command_error("自动按键失败", error)}
+
+
 def press_key(key: str = "Return"):
-    """模拟单次物理按键敲击 (如 Return / Enter / BackSpace 等)"""
     if IS_WINDOWS:
         return win32_press_key(key)
-
-    try:
-        subprocess.run(
-            ["wtype", "-k", key],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            env=APP_ENV,
-            check=True,
-            timeout=2
-        )
-        return {"ok": True}
-    except subprocess.CalledProcessError as e:
-        return {"ok": False, "error": f"wtype 错误: {e.stderr.decode('utf-8', errors='ignore')}"}
-    except FileNotFoundError:
-        return {"ok": False, "error": "系统中未安装 wtype"}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+    if key not in ("Return", "Enter"):
+        return {"ok": False, "error": "不支持的按键"}
+    return linux_send_key("enter")
 
 # ---------------------------------------------------------
 # 2.1 电脑端即时音频反馈 (统一专属轻微机械轴微敲击音)
@@ -634,9 +632,9 @@ MOBILE_HTML = """<!DOCTYPE html>
       --text-primary: #21201D;
       --text-secondary: #57534D;
       --text-muted: #8C877D;
-      --accent: #21201D;
+      --accent: #2563EB;
       --accent-text: #FFFFFF;
-      --accent-hover: #3A3834;
+      --accent-hover: #1D4ED8;
       --success: #16A34A;
       --danger: #DC2626;
       --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
@@ -934,7 +932,8 @@ MOBILE_HTML = """<!DOCTYPE html>
       display: flex;
       justify-content: space-between;
       align-items: center;
-      gap: 10px;
+      gap: 8px;
+      flex-wrap: wrap;
     }
 
     /* 分段模式控制器 */
@@ -947,6 +946,7 @@ MOBILE_HTML = """<!DOCTYPE html>
       flex: 1;
     }
     .segment-btn {
+      white-space: nowrap;
       flex: 1;
       padding: 7px 10px;
       border: none;
@@ -961,6 +961,9 @@ MOBILE_HTML = """<!DOCTYPE html>
       justify-content: center;
       gap: 5px;
       transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .segment-btn svg {
+      flex-shrink: 0;
     }
     .segment-btn.active {
       background: var(--surface);
@@ -1141,6 +1144,10 @@ MOBILE_HTML = """<!DOCTYPE html>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 10 4 15 9 20"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></svg>
             直接上屏
           </button>
+          <button class="segment-btn" id="modeTerminalBtn" onclick="setMode('terminal')">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="4 6 10 12 4 18"/><line x1="13" y1="18" x2="20" y2="18"/></svg>
+            终端模式
+          </button>
           <button class="segment-btn" id="modeClipBtn" onclick="setMode('clipboard_only')">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>
             仅剪贴板
@@ -1194,9 +1201,22 @@ MOBILE_HTML = """<!DOCTYPE html>
     const statusDot = document.getElementById('statusDot');
     const statusText = document.getElementById('statusText');
 
+    function readStorage(key) {
+      try { return localStorage.getItem(key); } catch { return null; }
+    }
+    function writeStorage(key, value) {
+      try { localStorage.setItem(key, value); } catch {}
+    }
+    async function request(url, options = {}, timeout = 12000) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeout);
+      try { return await fetch(url, { ...options, signal: controller.signal }); }
+      finally { clearTimeout(timer); }
+    }
+
     // 1. 主题初始化与切换 (支持持久化与系统匹配)
     function initTheme() {
-      const saved = localStorage.getItem('voice_theme');
+      const saved = readStorage('voice_theme');
       const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
       const theme = saved || (prefersDark ? 'dark' : 'light');
       applyTheme(theme, false);
@@ -1204,7 +1224,7 @@ MOBILE_HTML = """<!DOCTYPE html>
 
     function applyTheme(theme) {
       document.documentElement.setAttribute('data-theme', theme);
-      localStorage.setItem('voice_theme', theme);
+      writeStorage('voice_theme', theme);
       const metaColor = theme === 'light' ? '#F9F8F6' : '#0F1117';
       document.getElementById('themeColorMeta').setAttribute('content', metaColor);
 
@@ -1223,21 +1243,21 @@ MOBILE_HTML = """<!DOCTYPE html>
 
     // 初始化偏好设置 (自动清空 / 自动回车)
     function initPreferences() {
-      const savedClear = localStorage.getItem('voice_auto_clear');
+      const savedClear = readStorage('voice_auto_clear');
       if (savedClear !== null) {
         autoClearCheck.checked = savedClear === 'true';
       }
-      const savedEnter = localStorage.getItem('voice_auto_enter');
+      const savedEnter = readStorage('voice_auto_enter');
       if (savedEnter !== null) {
         autoEnterCheck.checked = savedEnter === 'true';
       }
     }
 
     autoClearCheck.addEventListener('change', () => {
-      localStorage.setItem('voice_auto_clear', autoClearCheck.checked);
+      writeStorage('voice_auto_clear', autoClearCheck.checked);
     });
     autoEnterCheck.addEventListener('change', () => {
-      localStorage.setItem('voice_auto_enter', autoEnterCheck.checked);
+      writeStorage('voice_auto_enter', autoEnterCheck.checked);
     });
 
     // 2. 模式切换
@@ -1245,6 +1265,7 @@ MOBILE_HTML = """<!DOCTYPE html>
       currentMode = mode;
       document.getElementById('modeAutoBtn').classList.toggle('active', mode === 'auto');
       document.getElementById('modeClipBtn').classList.toggle('active', mode === 'clipboard_only');
+      document.getElementById('modeTerminalBtn').classList.toggle('active', mode === 'terminal');
     }
 
     // 3. 文本输入与字数统计
@@ -1285,8 +1306,9 @@ MOBILE_HTML = """<!DOCTYPE html>
 
     // 5. 真实数据发送
     async function handleSend() {
-      const text = textInput.value.trim();
-      if (!text) {
+      if (sendBtn.disabled) return;
+      const text = textInput.value;
+      if (!text.trim()) {
         showToast('请先长按输入法语音键说话');
         if (document.activeElement !== textInput) {
           textInput.focus();
@@ -1303,7 +1325,7 @@ MOBILE_HTML = """<!DOCTYPE html>
       sendBtn.innerHTML = '<span>正在发送...</span>';
 
       try {
-        const resp = await fetch('/api/type', {
+        const resp = await request('/api/type', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1314,21 +1336,22 @@ MOBILE_HTML = """<!DOCTYPE html>
         });
         const data = await resp.json();
 
-        if (data.ok) {
+        if (resp.ok && data.ok) {
           // 静默添加历史与清空
           addHistory(text);
-          if (autoClearCheck.checked) {
+          if (autoClearCheck.checked && textInput.value === text) {
             textInput.value = '';
             charCount.textContent = '0 字符';
           }
 
-          // 按钮原地轻量反馈：统一显示“已发送”
+          showToast(data.warning || (data.typed ? '文字已发送到电脑输入框' : '已存入电脑剪贴板，请手动粘贴'));
+          // Distinguish successful paste from clipboard-only delivery.
           sendBtn.classList.add('success');
           sendBtn.innerHTML = `
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
               <polyline points="20 6 9 17 4 12"/>
             </svg>
-            <span>已发送</span>
+            <span>${data.typed ? '已上屏' : '已存入剪贴板'}</span>
           `;
           setTimeout(() => {
             resetSendBtn();
@@ -1339,7 +1362,7 @@ MOBILE_HTML = """<!DOCTYPE html>
         }
       } catch (err) {
         resetSendBtn();
-        showToast('网络连接失败，请检查局域网');
+        showToast(err.name === 'AbortError' ? '发送超时，请先检查电脑是否收到，避免重复发送' : '网络连接失败，请检查局域网');
         statusDot.classList.add('offline');
         statusText.textContent = '网络断开';
       }
@@ -1348,7 +1371,8 @@ MOBILE_HTML = """<!DOCTYPE html>
     // 6. 历史记录 (本地持久化 LocalStorage)
     function getSavedHistory() {
       try {
-        return JSON.parse(localStorage.getItem('voice_history') || '[]');
+        const saved = JSON.parse(readStorage('voice_history') || '[]');
+        return Array.isArray(saved) ? saved.filter(item => item && typeof item.text === 'string') : [];
       } catch {
         return [];
       }
@@ -1356,7 +1380,7 @@ MOBILE_HTML = """<!DOCTYPE html>
 
     function saveHistory(list) {
       try {
-        localStorage.setItem('voice_history', JSON.stringify(list));
+        writeStorage('voice_history', JSON.stringify(list));
       } catch {}
     }
 
@@ -1423,7 +1447,7 @@ MOBILE_HTML = """<!DOCTYPE html>
     // 7. 心跳状态检查
     async function checkHealth() {
       try {
-        const res = await fetch('/api/status', { cache: 'no-store' });
+        const res = await request('/api/status', { cache: 'no-store' }, 3000);
         if (res.ok) {
           statusDot.classList.remove('offline');
           statusText.textContent = '已连接';
@@ -1441,16 +1465,31 @@ MOBILE_HTML = """<!DOCTYPE html>
     initTheme();
     initPreferences();
     renderHistory();
+    checkHealth();
     setInterval(checkHealth, 5000);
 
     // 8. 软键盘焦点保活拦截：点击按钮阻止失焦，防止软键盘闪退重启
     function preventFocusLoss(e) {
       e.preventDefault();
     }
-    sendBtn.addEventListener('pointerdown', preventFocusLoss);
-    sendBtn.addEventListener('mousedown', preventFocusLoss);
-    document.querySelectorAll('.clear-btn, .segment-btn, .theme-toggle-btn, .hint-checkbox').forEach(el => {
-      el.addEventListener('pointerdown', preventFocusLoss);
+    // Dispatch on pointerup explicitly; cancelling pointerdown can suppress
+    // synthetic click on mobile browsers. Keyboard activation still uses click.
+    let sendPointer = null;
+    sendBtn.addEventListener('pointerdown', e => {
+      if (!e.isPrimary || e.button !== 0 || sendBtn.disabled) return;
+      e.preventDefault();
+      sendPointer = e.pointerId;
+    });
+    sendBtn.addEventListener('pointerup', e => {
+      if (sendPointer !== e.pointerId) return;
+      sendPointer = null;
+      const rect = sendBtn.getBoundingClientRect();
+      if (e.clientX >= rect.left && e.clientX <= rect.right &&
+          e.clientY >= rect.top && e.clientY <= rect.bottom) handleSend();
+    });
+    sendBtn.addEventListener('pointercancel', () => { sendPointer = null; });
+    sendBtn.onclick = e => { if (e.detail === 0 || !window.PointerEvent) handleSend(); };
+    document.querySelectorAll('.clear-btn, .segment-btn, .theme-toggle-btn').forEach(el => {
       el.addEventListener('mousedown', preventFocusLoss);
     });
   </script>
@@ -1461,6 +1500,9 @@ MOBILE_HTML = """<!DOCTYPE html>
 # ---------------------------------------------------------
 # 4. HTTP 请求处理派发
 # ---------------------------------------------------------
+
+INPUT_LOCK = threading.Lock()
+
 
 class VoiceRequestHandler(BaseHTTPRequestHandler):
     def address_string(self):
@@ -1513,46 +1555,56 @@ class VoiceRequestHandler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
 
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(10)
+
+    def send_json(self, status, payload):
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_POST(self):
-        parsed = urlparse(self.path)
-        if parsed.path == "/api/type":
-            content_len = int(self.headers.get("Content-Length", 0))
-            post_body = self.rfile.read(content_len)
-            try:
-                data = json.loads(post_body.decode("utf-8"))
-                text = data.get("text", "")
-                mode = data.get("mode", "auto")
-                auto_enter = bool(data.get("enter", False))
-
-                if not text:
-                    self.send_response(400)
-                    self.send_header("Content-Type", "application/json")
-                    self.end_headers()
-                    self.wfile.write(json.dumps({"ok": False, "error": "文本不能为空"}).encode("utf-8"))
-                    return
-
-                # 执行注入
-                inject_res = inject_text(text, mode)
-                if inject_res["ok"]:
+        if urlparse(self.path).path != "/api/type":
+            self.send_json(404, {"ok": False, "error": "接口不存在"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= 1024 * 1024:
+                raise ValueError("请求长度无效或超过 1 MB")
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("请求必须为 JSON 对象")
+            text, mode = data.get("text"), data.get("mode", "auto")
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError("文本不能为空")
+            if mode not in ("auto", "terminal", "clipboard_only"):
+                raise ValueError("不支持的输入模式")
+            if not isinstance(data.get("enter", False), bool):
+                raise ValueError("自动回车必须为布尔值")
+        except (ValueError, UnicodeError) as error:
+            self.send_json(400, {"ok": False, "error": str(error)})
+            return
+        try:
+            # Serialize clipboard + paste + Enter to avoid crossing two requests.
+            with INPUT_LOCK:
+                result = inject_text(text, mode)
+                result["entered"] = False
+                if result["ok"]:
                     play_feedback_sound()
-                    # 如果勾选了自动回车，间隔 60ms 敲下回车键
-                    if auto_enter:
+                    if data.get("enter") and result["typed"]:
                         time.sleep(0.06)
-                        press_key("Return")
-                self.send_response(200 if inject_res["ok"] else 500)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                resp_bytes = json.dumps(inject_res).encode("utf-8")
-                self.send_header("Content-Length", str(len(resp_bytes)))
-                self.end_headers()
-                self.wfile.write(resp_bytes)
-            except Exception as ex:
-                self.send_response(500)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(json.dumps({"ok": False, "error": str(ex)}).encode("utf-8"))
-        else:
-            self.send_response(404)
-            self.end_headers()
+                        enter_result = press_key("Return")
+                        result["entered"] = enter_result["ok"]
+                        if not enter_result["ok"]:
+                            result["warning"] = enter_result["error"]
+            self.send_json(200 if result["ok"] else 500, result)
+        except Exception as error:
+            self.send_json(500, {"ok": False, "error": str(error)})
 
 # ---------------------------------------------------------
 # 5. 启动入口与二维码展示
@@ -1616,14 +1668,14 @@ def main():
 
     # 尝试绑定端口 (兼容 Linux errno 98 与 Windows WSAEADDRINUSE 10048)
     try:
-        server = HTTPServer((args.host, port), VoiceRequestHandler)
+        server = ThreadingHTTPServer((args.host, port), VoiceRequestHandler)
     except OSError as e:
         if e.errno in (98, 10048):
             print(f"\n[⚠️ 端口提示] 端口 {port} 当前已被其他进程占用！")
             print(f"[🔄 自动回退] 尝试使用防火墙已放行的备用端口: {args.fallback_port} ...")
             try:
                 port = args.fallback_port
-                server = HTTPServer((args.host, port), VoiceRequestHandler)
+                server = ThreadingHTTPServer((args.host, port), VoiceRequestHandler)
             except OSError as e2:
                 print(f"[❌ 错误] 备用端口 {port} 同样不可用: {e2}")
                 sys.exit(1)

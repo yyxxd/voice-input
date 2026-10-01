@@ -10,7 +10,8 @@ import urllib.request
 import urllib.error
 import json
 import subprocess
-import winreg
+if sys.platform == "win32":
+    import winreg
 
 # 确保控制台支持 UTF-8 与 ANSI 颜色
 if sys.platform == "win32":
@@ -166,65 +167,96 @@ def show_firewall_tips():
     print("=" * 60)
     input("\n按回车键返回菜单...")
 
+def read_menu_key():
+    import msvcrt
+    key = msvcrt.getwch()
+    if key in ("\x00", "\xe0"):
+        return {"H": "up", "P": "down"}.get(msvcrt.getwch(), "")
+    return {"\r": "enter", "q": "quit", "Q": "quit", "\x03": "quit",
+            "k": "up", "j": "down"}.get(key, "")
+
+
+def run_foreground():
+    clear_screen()
+    print("服务运行中，按 Ctrl+C 返回控制中心。\n")
+    try:
+        subprocess.run([sys.executable, VOICE_SCRIPT])
+    except KeyboardInterrupt:
+        pass
+
+
 def main_loop():
-    # 导入主脚本获取 IP 探测方法
+    if sys.platform != "win32":
+        os.execvp("bash", ["bash", os.path.join(PROJECT_DIR, "menu.sh")])
     sys.path.insert(0, PROJECT_DIR)
     import voice_input
 
+    actions = [
+        ("前台启动", "查看实时日志与扫码连接", run_foreground),
+        ("后台启动", "静默接收手机文字", start_background),
+        ("停止服务", "关闭正在运行的接收服务", stop_service),
+        ("重启服务", "载入最新代码并重新启动", restart_service),
+        ("切换开机自启", "管理当前用户开机启动配置", toggle_autostart),
+        ("安装二维码支持", "安装或修复 qrcode", install_qrcode),
+        ("防火墙指引", "排查手机无法连接的问题", show_firewall_tips),
+        ("退出控制台", "后台服务继续运行", None),
+    ]
+    selected = 0
     while True:
-        clear_screen()
-        is_running, active_port = check_service_status()
-        lan_ips = voice_input.get_lan_ips()
-        primary_ip = lan_ips[0] if lan_ips else "127.0.0.1"
-        autostart_str = "\033[1;32m已启用\033[0m" if is_autostart_enabled() else "\033[90m未启用\033[0m"
+        running, port = check_service_status()
+        ips = voice_input.get_lan_ips()
+        ip = ips[0] if ips else "127.0.0.1"
+        auto = "已启用" if is_autostart_enabled() else "未启用"
+        lines = []
+        lines.append("\033[1;36m  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m")
+        lines.append("\033[1m  VOICE INPUT\033[0m  \033[90m手机语音 · 直达电脑\033[0m")
+        lines.append("\033[1;36m  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m")
+        status = "\033[32m● 运行中" if running else "\033[33m○ 已停止"
+        lines.append(f"  {status}\033[0m  端口 {port} · 自启 {auto}")
+        lines.append(f"  \033[36mhttp://{ip}:{port}\033[0m\n")
+        for index, (label, _, _) in enumerate(actions):
+            if index == selected:
+                lines.append(f"  \033[1;36m❯ {label}\033[0m")
+            else:
+                lines.append(f"    {label}")
+        lines.append(f"\n  \033[90m{actions[selected][1]}\033[0m")
+        lines.append("\033[36m  ──────────────────────────────────────────────\033[0m")
+        lines.append("  ↑ ↓ 选择   Enter 执行   Q 退出")
+        sys.stdout.write("\033[?25l\033[H" + "\033[K\n".join(lines) + "\033[K\033[J\033[s")
+        sys.stdout.flush()
+        while True:
+            previous = selected
+            key = read_menu_key()
+            if key == "up":
+                selected = (selected - 1) % len(actions)
+            elif key == "down":
+                selected = (selected + 1) % len(actions)
+            elif key == "quit":
+                return
+            elif key == "enter":
+                action = actions[selected][2]
+                if action is None:
+                    return
+                sys.stdout.write("\033[?25h\n")
+                sys.stdout.flush()
+                action()
+                break
+            if selected != previous:
+                changes = []
+                for index in (previous, selected):
+                    label = actions[index][0]
+                    line = f"  \033[1;36m❯ {label}\033[0m" if index == selected else f"    {label}"
+                    changes.append(f"\033[{7 + index};1H{line}\033[K")
+                changes.append(f"\033[{8 + len(actions)};1H  \033[90m{actions[selected][1]}\033[0m\033[K")
+                sys.stdout.write("".join(changes) + "\033[u")
+                sys.stdout.flush()
 
-        print("=" * 60)
-        print("  🎙️  Voice Input Bridge 控制中心 (Windows)")
-        print("=" * 60)
-        if is_running:
-            print(f"  ● 运行状态: \033[1;32m运行中\033[0m (端口: {active_port})    ● 开机自启: {autostart_str}")
-            print(f"  📱 手机直连: \033[1;36mhttp://{primary_ip}:{active_port}\033[0m")
-        else:
-            print(f"  ○ 运行状态: \033[1;31m已停止\033[0m                  ● 开机自启: {autostart_str}")
-            print(f"  📱 手机直连: \033[90mhttp://{primary_ip}:58002 (服务未启动)\033[0m")
-
-        print("-" * 60)
-        print("  [1] 前台启动 (查看实时日志与扫码连接)")
-        print("  [2] 后台静默启动 (无黑框窗口，后台常驻)")
-        print("  [3] 停止运行服务")
-        print("  [4] 重启服务")
-        print(f"  [5] 切换开机自启动")
-        print("  [6] 安装/修复二维码支持库 (qrcode)")
-        print("  [7] 查看局域网防火墙放行指引")
-        print("  [0] 退出")
-        print("=" * 60)
-
-        choice = input("请输入选项 [0-7]: ").strip()
-        if choice == "1":
-            clear_screen()
-            print("\033[1;36m[🚀 正在前台启动 Voice Input Bridge...]\033[0m")
-            print("💡 提示: 按 Ctrl+C 可停止运行并返回控制中心\n")
-            try:
-                subprocess.run([sys.executable, VOICE_SCRIPT])
-            except KeyboardInterrupt:
-                pass
-            print("\n服务已退出。")
-            time.sleep(1)
-        elif choice == "2":
-            start_background()
-        elif choice == "3":
-            stop_service()
-        elif choice == "4":
-            restart_service()
-        elif choice == "5":
-            toggle_autostart()
-        elif choice == "6":
-            install_qrcode()
-        elif choice == "7":
-            show_firewall_tips()
-        elif choice == "0":
-            print("\n👋 祝你使用愉快，再见！")
-            sys.exit(0)
 
 if __name__ == "__main__":
-    main_loop()
+    try:
+        main_loop()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        sys.stdout.write("\033[0m\033[?25h\n")
+        sys.stdout.flush()
